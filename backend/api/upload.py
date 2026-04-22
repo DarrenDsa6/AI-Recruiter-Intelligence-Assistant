@@ -3,6 +3,7 @@ import os
 
 from services.parser import DocumentParser
 from services.chunker import TextChunker
+from services.embedding_service import EmbeddingService
 
 router = APIRouter()
 
@@ -11,6 +12,7 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 chunker = TextChunker()
+embedder = EmbeddingService()
 
 
 @router.post("/upload")
@@ -29,12 +31,23 @@ async def upload_file(file: UploadFile = File(...)):
     # Parse document
     extracted_text = DocumentParser.parse(file_path)
 
-    # Chunk document
-    chunks = chunker.chunk_text(extracted_text)
+    # Chunk text
+    chunks = chunker.chunk_text(
+        extracted_text
+    )
+
+    # Store embeddings
+    stored_count = embedder.store_embeddings(
+        chunks,
+        metadata=[
+            {"source": file.filename}
+            for _ in chunks
+        ]
+    )
 
     return {
         "filename": file.filename,
-        "status": "uploaded parsed and chunked",
+        "status": "uploaded parsed embedded stored",
         "total_chunks": len(chunks),
-        "preview_chunk": chunks[0] if chunks else ""
+        "stored_vectors": stored_count
     }
