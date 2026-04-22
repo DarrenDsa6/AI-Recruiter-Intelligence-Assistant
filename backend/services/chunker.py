@@ -1,29 +1,12 @@
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+class ChunkerService:
 
-class TextChunker:
-    """
-    Handles text chunking for embedding.
-    Uses recursive splitting to preserve meaning.
-    """
-
-    def __init__(
-        self,
-        chunk_size: int = 500,
-        chunk_overlap: int = 100
-    ):
-        self.splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap
-        )
-
-    def chunk_text(self, text: str):
-        """
-        Split text into chunks.
-        """
-
-        if not text:
-            return []
-
-        chunks = self.splitter.split_text(text)
+    def chunk_text(self, text, chunk_size=500, overlap=50):
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = start + chunk_size
+            chunk = text[start:end]
+            chunks.append(chunk)
+            start += chunk_size - overlap
 
         return chunks

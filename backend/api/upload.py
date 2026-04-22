@@ -1,53 +1,42 @@
 from fastapi import APIRouter, UploadFile, File
-import os
 
-from services.parser import DocumentParser
-from services.chunker import TextChunker
-from services.embedding_service import EmbeddingService
+from services.parser import ParserService
+from services.chunker import ChunkerService
+from services.embedding_service import EmbedderService
+from services.vector_store import VectorStoreService
 
 router = APIRouter()
 
-UPLOAD_DIR = "uploads"
-
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-chunker = TextChunker()
-embedder = EmbeddingService()
+parser = ParserService()
+chunker = ChunkerService()
+embedder = EmbedderService()
+vector_store = VectorStoreService()
 
 
 @router.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-
-    file_path = os.path.join(
-        UPLOAD_DIR,
-        file.filename
+async def upload_document(file: UploadFile = File(...)):
+    # Read file
+    content = await file.read()
+    # Parse file
+    text = parser.parse_file(
+        file_bytes=content,
+        filename=file.filename
     )
-
-    # Save file
-    with open(file_path, "wb") as buffer:
-        content = await file.read()
-        buffer.write(content)
-
-    # Parse document
-    extracted_text = DocumentParser.parse(file_path)
-
+    print("Parsed text length:", len(text))
     # Chunk text
-    chunks = chunker.chunk_text(
-        extracted_text
+    chunks = chunker.chunk_text(text)
+    print("Chunks created:", len(chunks))
+    # Create embeddings
+    embeddings = embedder.embed_documents(chunks)
+    print("Embeddings created:", len(embeddings))
+    # Store vectors
+    stored_count = vector_store.add_documents(
+        documents=chunks,
+        embeddings=embeddings
     )
-
-    # Store embeddings
-    stored_count = embedder.store_embeddings(
-        chunks,
-        metadata=[
-            {"source": file.filename}
-            for _ in chunks
-        ]
-    )
-
+    print("Stored vectors:", stored_count)
     return {
         "filename": file.filename,
-        "status": "uploaded parsed embedded stored",
         "total_chunks": len(chunks),
         "stored_vectors": stored_count
     }

@@ -1,93 +1,47 @@
 import fitz  # PyMuPDF
 from docx import Document
-import os
-import re
+import tempfile
 
-class DocumentParser:
-    """
-    Handles parsing of different document formats.
-    Supports:
-    - PDF
-    - DOCX
-    """
+class ParserService:
+    def parse_file(self, file_bytes, filename):
+        if filename.endswith(".pdf"):
+            return self.parse_pdf(file_bytes)
 
-    @staticmethod
-    def parse_pdf(file_path: str) -> str:
-        """
-        Extract text from PDF using PyMuPDF
-        """
-        text = ""
-
-        try:
-            doc = fitz.open(file_path)
-
-            for page in doc:
-                text += page.get_text()
-
-            doc.close()
-
-        except Exception as e:
-            print(f"PDF parsing error: {e}")
-
-        return text
-
-    @staticmethod
-    def parse_docx(file_path: str) -> str:
-        """
-        Extract text from DOCX using python-docx
-        """
-        text = ""
-
-        try:
-            doc = Document(file_path)
-
-            paragraphs = [
-                para.text
-                for para in doc.paragraphs
-                if para.text.strip()
-            ]
-
-            text = "\n".join(paragraphs)
-
-        except Exception as e:
-            print(f"DOCX parsing error: {e}")
-
-        return text
-
-    @staticmethod
-    def clean_text(text: str) -> str:
-        """
-        Basic text cleaning
-        Removes extra whitespace
-        """
-        text = re.sub(r"\s+", " ", text)
-        text = text.strip()
-
-        return text
-
-    @staticmethod
-    def parse(file_path: str) -> str:
-        """
-        Main router function
-        Detect file type and parse accordingly
-        """
-
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(
-                f"File not found: {file_path}"
-            )
-
-        if file_path.endswith(".pdf"):
-            text = DocumentParser.parse_pdf(file_path)
-
-        elif file_path.endswith(".docx"):
-            text = DocumentParser.parse_docx(file_path)
+        elif filename.endswith(".docx"):
+            return self.parse_docx(file_bytes)
 
         else:
-            raise ValueError(
-                "Unsupported file format. Use PDF or DOCX."
-            )
+            raise ValueError("Unsupported file type")
 
-        cleaned_text = DocumentParser.clean_text(text)
+    def parse_pdf(self, file_bytes):
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".pdf"
+        ) as temp_file:
 
-        return cleaned_text
+            temp_file.write(file_bytes)
+            temp_path = temp_file.name
+
+        doc = fitz.open(temp_path)
+        text = ""
+        for page in doc:
+            text += page.get_text()
+
+        return text
+
+    def parse_docx(self, file_bytes):
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".docx"
+        ) as temp_file:
+
+            temp_file.write(file_bytes)
+            temp_path = temp_file.name
+
+        doc = Document(temp_path)
+        text = ""
+
+        for para in doc.paragraphs:
+            text += para.text + "\n"
+
+        return text

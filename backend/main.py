@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 from api.upload import router as upload_router
+from api.search import router as search_router
 
 app = FastAPI(
-    title="AI Recruiter Intelligence Assistant",
-    version="1.0.0"
+    title="AI Recruiter Intelligence Assistant"
 )
 
 app.include_router(
@@ -11,9 +11,11 @@ app.include_router(
     prefix="/api"
 )
 
+app.include_router(
+    search_router,
+    prefix="/api"
+)
 
 @app.get("/")
 def root():
-    return {
-        "message": "AI Recruiter Backend Running 🚀"
-    }
+    return {"message": "AI Recruiter Backend Running"}
