@@ -7,7 +7,6 @@ router = APIRouter()
 matcher = MatcherService()
 
 class JDRequest(BaseModel):
-
     job_description: str = Field(
         ...,
         title="Job Description",

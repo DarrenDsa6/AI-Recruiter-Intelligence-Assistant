@@ -1,0 +1,425 @@
+[
+"python","java","c#","c++","go","rust","kotlin","swift","javascript","typescript",
+"scala","ruby","perl","dart","objective-c","bash","powershell","groovy",
+
+"html","css","sass","less","tailwind","bootstrap","material-ui","chakra-ui",
+
+"react","angular","vue","svelte","nextjs","nuxtjs","redux","zustand",
+
+"node.js","express.js","fastapi","flask","django","spring","spring boot",
+".net","asp.net","asp.net core","web api","rest api","graphql","grpc",
+
+"machine learning","deep learning","nlp","computer vision","reinforcement learning",
+"rag","llm","generative ai","prompt engineering",
+
+"tensorflow","pytorch","keras","scikit-learn","xgboost","lightgbm",
+
+"langchain","llamaindex","haystack","transformers","sentence-transformers",
+
+"pandas","numpy","matplotlib","seaborn","plotly",
+
+"opencv","mediapipe",
+
+"mysql","postgresql","mongodb","redis","sqlite","oracle","mariadb",
+"dynamodb","cassandra","couchdb","neo4j",
+
+"elasticsearch","solr","opensearch",
+
+"docker","kubernetes","helm","terraform","ansible","chef","puppet",
+
+"jenkins","github actions","gitlab ci","circleci",
+
+"aws","azure","gcp","cloud computing",
+
+"ec2","s3","lambda","cloudformation",
+"azure functions","azure storage","azure devops",
+"cloud run","cloud functions",
+
+"linux","unix","ubuntu","centos",
+
+"git","github","bitbucket","svn",
+
+"microservices","monolith","event-driven architecture",
+
+"kafka","rabbitmq","activemq",
+
+"web scraping","beautifulsoup","scrapy","selenium",
+
+"jwt","oauth","openid connect",
+
+"socket programming","websockets",
+
+"unit testing","pytest","junit","mocha","chai",
+
+"testng","cypress","playwright",
+
+"power bi","tableau","looker",
+
+"data engineering","etl","data pipelines",
+
+"airflow","prefect",
+
+"data science","data analysis",
+
+"big data","hadoop","spark","hive",
+
+"vector database","chroma","faiss","pinecone","milvus",
+
+"api gateway","nginx","kong",
+
+"load balancing",
+
+"distributed systems",
+
+"object-oriented programming",
+
+"design patterns",
+
+"solid principles",
+
+"dependency injection",
+
+"clean architecture",
+
+"domain-driven design",
+
+"tdd","bdd",
+
+"agile","scrum","kanban",
+
+"jira","confluence",
+
+"figma","canva",
+
+"responsive design",
+
+"ui design","ux design",
+
+"seo",
+
+"performance optimization",
+
+"caching","redis caching",
+
+"message queues",
+
+"batch processing",
+
+"real-time processing",
+
+"monitoring","prometheus","grafana",
+
+"logging","elk stack",
+
+"security","authentication","authorization",
+
+"penetration testing",
+
+"cryptography",
+
+"encryption",
+
+"ssl","tls",
+
+"firewall",
+
+"networking",
+
+"dns","http","https",
+
+"tcp/ip",
+
+"virtualization",
+
+"vmware","virtualbox",
+
+"containerization",
+
+"serverless",
+
+"infrastructure as code",
+
+"system design",
+
+"api design",
+
+"software architecture",
+
+"scalability",
+
+"fault tolerance",
+
+"high availability",
+
+"observability",
+
+"site reliability engineering",
+
+"chaos engineering",
+
+"blockchain",
+
+"ethereum","solidity",
+
+"smart contracts",
+
+"iot",
+
+"edge computing",
+
+"embedded systems",
+
+"robotics",
+
+"ar","vr",
+
+"game development",
+
+"unity","unreal engine",
+
+"mobile development",
+
+"android","ios",
+
+"flutter","react native",
+
+"swiftui",
+
+"kotlin android",
+
+"firebase",
+
+"push notifications",
+
+"location services",
+
+"payment gateway integration",
+
+"stripe","razorpay",
+
+"search algorithms",
+
+"sorting algorithms",
+
+"graph algorithms",
+
+"dynamic programming",
+
+"data structures",
+
+"linked list",
+
+"binary tree",
+
+"heap",
+
+"hash table",
+
+"queue","stack",
+
+"recursion",
+
+"time complexity",
+
+"space complexity",
+
+"algorithm optimization",
+
+"parallel computing",
+
+"gpu programming",
+
+"cuda",
+
+"opencl",
+
+"quantum computing",
+
+"bioinformatics",
+
+"natural language processing",
+
+"text classification",
+
+"sentiment analysis",
+
+"topic modeling",
+
+"named entity recognition",
+
+"speech recognition",
+
+"text-to-speech",
+
+"speech-to-text",
+
+"image recognition",
+
+"object detection",
+
+"yolo","ssd","rcnn",
+
+"image segmentation",
+
+"pose estimation",
+
+"optical character recognition",
+
+"ocr",
+
+"recommendation systems",
+
+"collaborative filtering",
+
+"content-based filtering",
+
+"anomaly detection",
+
+"fraud detection",
+
+"time series analysis",
+
+"forecasting",
+
+"a/b testing",
+
+"feature engineering",
+
+"model deployment",
+
+"mlops",
+
+"model monitoring",
+
+"hyperparameter tuning",
+
+"cross-validation",
+
+"model evaluation",
+
+"docker compose",
+
+"helm charts",
+
+"blue-green deployment",
+
+"canary deployment",
+
+"rolling deployment",
+
+"zero downtime deployment",
+
+"cdn",
+
+"cloudflare",
+
+"edge caching",
+
+"reverse proxy",
+
+"rate limiting",
+
+"throttling",
+
+"retry logic",
+
+"circuit breaker",
+
+"resilience",
+
+"retry policies",
+
+"service mesh",
+
+"istio",
+
+"linkerd",
+
+"sidecar architecture",
+
+"api versioning",
+
+"swagger",
+
+"openapi",
+
+"postman",
+
+"insomnia",
+
+"data governance",
+
+"data quality",
+
+"data lineage",
+
+"data catalog",
+
+"master data management",
+
+"data warehousing",
+
+"snowflake","redshift","bigquery",
+
+"dimensional modeling",
+
+"star schema",
+
+"snowflake schema",
+
+"olap","oltp",
+
+"business intelligence",
+
+"reporting",
+
+"dashboards",
+
+"automation",
+
+"scripting",
+
+"cron jobs",
+
+"task scheduling",
+
+"backup strategies",
+
+"disaster recovery",
+
+"version control",
+
+"code review",
+
+"pair programming",
+
+"technical documentation",
+
+"knowledge sharing",
+
+"mentoring",
+
+"problem solving",
+
+"debugging",
+
+"profiling",
+
+"memory management",
+
+"garbage collection",
+
+"threading",
+
+"multithreading",
+
+"asynchronous programming",
+
+"parallel processing",
+
+"concurrency",
+
+"deadlock prevention",
+
+"race condition handling"
+]
