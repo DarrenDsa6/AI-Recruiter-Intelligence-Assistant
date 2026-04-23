@@ -14,13 +14,22 @@ class RetrieverService:
         )
 
     def search(self, query, top_k=5):
-        query_embedding = self.model.encode(
-            query
-        ).tolist()
-
+        query_embedding = self.model.encode(query).tolist()
         results = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k
         )
+
         documents = results.get("documents", [[]])[0]
-        return documents
+
+        metadatas = results.get("metadatas", [[]])[0]
+
+        output = []
+
+        for doc, meta in zip(documents, metadatas):
+            output.append({
+                "text": doc,
+                "metadata": meta
+            })
+
+        return output
