@@ -153,6 +153,32 @@ This project demonstrates:
 * Repository extraction
 * README ingestion
 * Language analysis
+## 🚀 GitHub Repository Intelligence
+
+  The system can ingest GitHub repositories and understand project-level details.
+  
+  ### Features
+  
+  - Fetches public repositories
+  - Reads README files
+  - Extracts project descriptions
+  - Performs semantic search across:
+    - Resume
+    - GitHub Projects
+  
+  ### Example Workflow
+  
+  1. Upload resume
+  2. Ingest GitHub username
+  3. Search for technologies or projects
+  
+  Example:
+  
+  Search Query:
+  react dashboard
+  
+  Result:
+  Returns matching resume and GitHub project details.
 
 ## Phase 3 — Job Matching Engine
 
