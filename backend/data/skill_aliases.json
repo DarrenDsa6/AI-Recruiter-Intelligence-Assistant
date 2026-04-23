@@ -1,0 +1,44 @@
+{
+"reactjs": "react",
+"react.js": "react",
+
+"nodejs": "node.js",
+"node": "node.js",
+
+"ml": "machine learning",
+"ai": "artificial intelligence",
+
+"js": "javascript",
+"ts": "typescript",
+
+"py": "python",
+
+"postgres": "postgresql",
+
+"mongo": "mongodb",
+
+"k8s": "kubernetes",
+
+"tf": "tensorflow",
+
+"cv": "computer vision",
+
+"nlp": "natural language processing",
+
+"dotnet": ".net",
+"aspnet": "asp.net",
+
+"fast api": "fastapi",
+
+"restful api": "rest api",
+
+"genai": "generative ai",
+
+"llms": "llm",
+
+"lang chain": "langchain",
+
+"vector db": "vector database",
+
+"ci cd": "ci/cd"
+}
