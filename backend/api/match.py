@@ -1,31 +1,47 @@
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from services.matcher import MatcherService
+from services.vector_store import VectorStoreService
 
 router = APIRouter()
+
 matcher = MatcherService()
+vector_store = VectorStoreService()
 
-class JDRequest(BaseModel):
-    job_description: str = Field(
-        ...,
-        title="Job Description",
-        description="Paste full multi-line job description here",
-        example="""
-            Looking for a Python developer with:
+class MatchRequest(BaseModel):
+    job_description: str
+    resume_id: str
 
-            - FastAPI
-            - Machine Learning
-            - RAG pipelines
-            - React frontend
-            - Docker
-            """
-    )
 
 @router.post("/match")
-async def match_job_description(request: JDRequest):
-    result = matcher.compute_similarity(
-        jd_text=request.job_description
+async def match_job_description(request: MatchRequest):
+    # Load Resume Text
+    resume_text = (
+        vector_store
+        .get_resume_text(
+            request.resume_id
+        )
+    )
+
+    if not resume_text:
+        return {
+            "error":
+                "Resume not found"
+        }
+
+    print(
+        "Loaded resume length:",
+        len(resume_text)
+    )
+
+    # Run Matching
+    result = (
+        matcher
+        .compute_similarity(
+            job_description=
+                request.job_description
+        )
     )
 
     return result
