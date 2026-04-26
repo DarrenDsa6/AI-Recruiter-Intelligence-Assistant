@@ -1,5 +1,4 @@
 class ChunkerService:
-
     def chunk_text(self, text, chunk_size=500, overlap=50):
         chunks = []
         start = 0
