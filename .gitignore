@@ -240,3 +240,22 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# Vector database
+chroma_db/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+backend/services/.env

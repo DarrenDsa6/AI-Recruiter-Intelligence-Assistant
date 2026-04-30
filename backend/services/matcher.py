@@ -5,267 +5,154 @@ from services.vector_store import VectorStoreService
 from services.skills import SkillExtractionService
 from services.semantic_matcher import SemanticMatcher
 from services.jd_skill_classifier import JDSkillClassifier
-from services.weighted_skill_gap_analyzer import (
-    WeightedSkillGapAnalyzer
-)
+from services.weighted_skill_gap_analyzer import WeightedSkillGapAnalyzer
 from services.embedding_service import EmbedderService
 from services.explainer import MatchExplainer
 
 
 class MatcherService:
-    def __init__(self):
+
+    def __init__(self, llm_service):
         print("Initializing Matcher Service...")
+
+        # -----------------------------
+        # Core services (deterministic layer)
+        # -----------------------------
         self.vector_store = VectorStoreService()
         self.skill_extractor = SkillExtractionService()
         self.semantic_matcher = SemanticMatcher()
         self.jd_classifier = JDSkillClassifier()
-        self.weighted_analyzer = (
-            WeightedSkillGapAnalyzer()
-        )
-        self.embedding_service = (
-            EmbedderService()
-        )
+        self.weighted_analyzer = WeightedSkillGapAnalyzer()
+        self.embedding_service = EmbedderService()
         self.explainer = MatchExplainer()
 
+        # -----------------------------
+        # LLM layer (intelligence layer)
+        # -----------------------------
+        self.llm = llm_service
+
+    # =====================================================
+    # CORE MATCHING ENGINE (deterministic logic)
+    # =====================================================
     def compute_similarity(self, job_description):
-        print(
-            "\n--- Starting Similarity Computation ---"
-        )
-        # STEP 0 — Load Resume from Vector Store
-        stored_data = (
-            self.vector_store
-            .get_all_documents()
-        )
+
+        stored_data = self.vector_store.get_all_documents()
 
         if not stored_data["documents"]:
-            raise ValueError(
-                "No resume found in vector store. Upload resume first."
-            )
+            raise ValueError("No resume found in vector store.")
 
-        resume_chunks = (
-            stored_data["documents"]
-        )
+        resume_text = " ".join(stored_data["documents"])
 
-        resume_text = " ".join(
-            resume_chunks
-        )
+        # -----------------------------
+        # Resume skills
+        # -----------------------------
+        stored_metadata = stored_data.get("metadatas", [])
 
-        print(
-            "Loaded resume length:",
-            len(resume_text)
-        )
-
-        # STEP 0.1 — Load Resume Skills from Metadata
-        stored_metadata = (
-            stored_data.get("metadatas", [])
-        )
-
-        if stored_metadata:
-            resume_skills = (
-                stored_metadata[0]
-                .get("skills", [])
-            )
+        if stored_metadata and "skills" in stored_metadata[0]:
+            resume_skills = stored_metadata[0]["skills"]
         else:
-            # fallback if metadata missing
-            resume_skills = (
-                self.skill_extractor
-                .extract_skills(
-                    resume_text
-                )
-            )
-        print(
-            "Resume Skills:",
-            resume_skills
-        )
+            resume_skills = self.skill_extractor.extract_skills(resume_text)
 
-        # STEP 1 — Extract JD Skills
-        jd_skills = (
-            self.skill_extractor
-            .extract_skills(
-                job_description
-            )
-        )
+        # -----------------------------
+        # JD skills
+        # -----------------------------
+        jd_skills = self.skill_extractor.extract_skills(job_description)
 
-        print(
-            "JD Skills:",
+        jd_classification = self.jd_classifier.classify_skills(
+            job_description,
             jd_skills
         )
 
-        # STEP 2 — Classify JD Skills
-        jd_classification = (
-            self.jd_classifier
-            .classify_skills(
-                job_description,
-                jd_skills
-            )
+        required_skills = jd_classification["required"]
+        optional_skills = jd_classification["optional"]
+
+        # -----------------------------
+        # Semantic matching
+        # -----------------------------
+        matched_skills = self.semantic_matcher.semantic_skill_match(
+            resume_skills,
+            jd_skills
         )
 
-        required_skills = (
-            jd_classification["required"]
-        )
-
-        optional_skills = (
-            jd_classification["optional"]
-        )
-
-        print(
-            "Required Skills:",
-            required_skills
-        )
-
-        print(
-            "Optional Skills:",
-            optional_skills
-        )
-
-        # STEP 3 — Semantic Skill Matching
-        matched_skills = (
-            self.semantic_matcher
-            .semantic_skill_match(
-                resume_skills,
-                jd_skills
-            )
-        )
-
-        print(
-            "Matched Skills:",
+        # -----------------------------
+        # Weighted analysis
+        # -----------------------------
+        weighted_result = self.weighted_analyzer.analyze(
+            required_skills,
+            optional_skills,
             matched_skills
         )
 
-        # STEP 4 — Weighted Skill Gap Analysis
-        weighted_result = (
-            self.weighted_analyzer
-            .analyze(
-                required_skills,
-                optional_skills,
-                matched_skills
-            )
-        )
+        # -----------------------------
+        # Embedding similarity
+        # -----------------------------
+        jd_embedding = self.embedding_service.get_embeddings([job_description])[0]
+        resume_embedding = self.embedding_service.get_embeddings([resume_text])[0]
 
-        print(
-            "Weighted Skill Match:",
-            weighted_result[
-                "match_score"
-            ]
-        )
-
-        # STEP 5 — Generate Embeddings
-        jd_embedding = (
-            self.embedding_service
-            .get_embeddings(
-                [job_description]
-            )[0]
-        )
-
-        resume_embedding = (
-            self.embedding_service
-            .get_embeddings(
-                [resume_text]
-            )[0]
-        )
-
-        # STEP 6 — Document Similarity
         doc_score = float(
-            cosine_similarity(
-                [jd_embedding],
-                [resume_embedding]
-            )[0][0]
+            cosine_similarity([jd_embedding], [resume_embedding])[0][0]
         )
 
-        print(
-            "Document Score:",
-            doc_score
+        skill_score = weighted_result["match_score"] / 100
+
+        final_score = (skill_score * 0.7) + (doc_score * 0.3)
+        final_percent = round(final_score * 100, 2)
+
+        # -----------------------------
+        # Explanation layer
+        # -----------------------------
+        explanation = self.explainer.generate_explanation(
+            matched_skills=matched_skills,
+            missing_skills=weighted_result["missing_required"] + weighted_result["missing_optional"],
+            match_score=final_percent
         )
 
-        # STEP 7 — Final Combined Score
-        skill_score = (
-            weighted_result[
-                "match_score"
-            ] / 100
-        )
-
-        final_score = (
-            skill_score * 0.7
-            + doc_score * 0.3
-        )
-
-        final_percent = round(
-            final_score * 100,
-            2
-        )
-
-        print(
-            "Final Score:",
-            final_percent
-        )
-
-        # STEP 8 — Generate Explanation
-        all_missing = (
-            weighted_result[
-                "missing_required"
-            ]
-            +
-            weighted_result[
-                "missing_optional"
-            ]
-        )
-
-        explanation = (
-            self.explainer
-            .generate_explanation(
-                matched_skills=matched_skills,
-                missing_skills=all_missing,
-                match_score=final_percent
-            )
-        )
-
-        # STEP 9 — Final Output
+        # -----------------------------
+        # Final output
+        # -----------------------------
         return {
-            "required_skills":
-                required_skills,
-            "optional_skills":
-                optional_skills,
-            "matched_skills":
-                matched_skills,
-            "missing_required":
-                weighted_result[
-                    "missing_required"
-                ],
-            "missing_optional":
-                weighted_result[
-                    "missing_optional"
-                ],
-            "recommendations":
-                weighted_result[
-                    "recommendations"
-                ],
-            "required_match":
-                weighted_result[
-                    "required_match"
-                ],
-            "optional_match":
-                weighted_result[
-                    "optional_match"
-                ],
-            "skill_score":
-                weighted_result[
-                    "match_score"
-                ],
-            "document_score":
-                round(
-                    float(doc_score) * 100,
-                    2
-                ),
-            "final_score":
-                final_percent,
-            "summary":
-                explanation["summary"],
-            "strong_matches":
-                explanation[
-                    "strong_matches"
-                ],
-            "learning_recommendations":
-                explanation[
-                    "recommendations"
-                ]
+            "required_skills": required_skills,
+            "optional_skills": optional_skills,
+            "matched_skills": matched_skills,
+            "missing_required": weighted_result["missing_required"],
+            "missing_optional": weighted_result["missing_optional"],
+            "skill_score": weighted_result["match_score"],
+            "document_score": round(doc_score * 100, 2),
+            "final_score": final_percent,
+            "summary": explanation["summary"],
+            "recommendations": weighted_result["recommendations"]
+        }
+
+    # =====================================================
+    # FULL AI PIPELINE (LLM + deterministic engine)
+    # =====================================================
+    def full_analysis(self, resume, jd, github_data):
+
+    # ✅ extract text properly
+        jd_text = jd["text"]
+
+        # 1. deterministic match
+        match_result = self.compute_similarity(jd_text)
+
+        github_analysis = self.llm.analyze_github_repos(github_data)
+
+        report = self.llm.generate_candidate_report(
+            resume=resume["text"],
+            jd=jd_text,
+            match_result=match_result,
+            github_context=github_analysis
+        )
+
+        questions = self.llm.generate_interview_questions(
+            resume=resume["text"],
+            jd=jd_text,
+            missing_skills=match_result["missing_required"],
+            github_context=github_analysis
+        )
+
+        return {
+            "match": match_result,
+            "github": github_analysis,
+            "report": report,
+            "questions": questions
         }
