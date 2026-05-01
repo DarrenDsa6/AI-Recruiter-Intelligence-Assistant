@@ -4,7 +4,7 @@ from services.retriever import RetrieverService
 router = APIRouter()
 retriever = RetrieverService()
 
-@router.get("/search")
+@router.get("/search/{session_id}")
 async def search_documents(query: str, top_k: int = 5):
     results = retriever.search(
         query=query,

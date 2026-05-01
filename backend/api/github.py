@@ -12,47 +12,28 @@ chunker = ChunkerService()
 embedder = EmbedderService()
 vector_store = VectorStoreService()
 
-@router.post("/github/{username}")
-async def ingest_github(username: str):
-    print(f"Fetching repositories for: {username}")
-
+@router.post("/github/{session_id}/{username}")
+async def ingest_github(session_id: str, username: str):
     repos = github_service.get_repositories(username)
-
-    print(f"Repositories found: {len(repos)}")
-
     chunks = []
     metadatas = []
 
-    # Process each repo
     for repo in repos:
+        readme = github_service.get_readme(username, repo["name"])
 
-        print(f"Processing repo: {repo['name']}")
-
-        readme_text = github_service.get_readme(
-            username,
-            repo["name"]
-        )
-
-        # Combine repo info + README
-        combined_text = f"""
-            Repository Name: {repo['name']}
-            Description: {repo['description']}
-            Repository URL: {repo['url']}
-
-            README:
-            {readme_text}
+        combined = f"""
+        Repo: {repo['name']}
+        Desc: {repo['description']}
+        URL: {repo['url']}
+        README:
+        {readme}
         """
-        # Chunk text
-        repo_chunks = chunker.chunk_text(
-            combined_text
-        )
-        print(
-            f"Chunks created for {repo['name']}: {len(repo_chunks)}"
-        )
 
-        # Store metadata per chunk
+        repo_chunks = chunker.chunk_text(combined)
+
         for chunk in repo_chunks:
             chunks.append(chunk)
+
             metadatas.append({
                 "source": "github",
                 "repo_name": repo["name"],
@@ -60,31 +41,18 @@ async def ingest_github(username: str):
             })
 
     if not chunks:
-        return {
-            "username": username,
-            "message": "No content found to store",
-            "repos_found": len(repos)
-        }
+        return {"message": "No data"}
 
-    print("Total chunks:", len(chunks))
+    embeddings = embedder.embed_documents(chunks)
 
-    # Create embeddings
-    embeddings = embedder.embed_documents(
-        chunks
-    )
-    print("Embeddings created:", len(embeddings))
-
-    # Store vectors with metadata
-    stored_count = vector_store.add_documents(
+    vector_store.add_documents(
         documents=chunks,
         embeddings=embeddings,
-        metadatas=metadatas
+        metadatas=metadatas,
+        session_id=session_id
     )
-    print("Stored vectors:", stored_count)
 
     return {
-        "username": username,
-        "repos_found": len(repos),
-        "chunks_created": len(chunks),
-        "stored_vectors": stored_count
+        "repos": len(repos),
+        "chunks": len(chunks)
     }
