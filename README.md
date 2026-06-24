@@ -1,211 +1,111 @@
-# 🧠 AI Recruiter Intelligence Assistant
+# AI Recruiter Intelligence Assistant
 
-An AI-powered recruitment assistant that transforms candidate data (resume, GitHub, portfolio links) into a **searchable intelligence system** using **Retrieval-Augmented Generation (RAG)**.
-
-Instead of simply chatting with documents, this system evaluates candidates holistically and generates structured hiring insights.
+An end-to-end AI-powered candidate screening platform. Upload a resume, paste a job description, and get a structured match analysis with scores, skill gaps, GitHub insights, interview questions, and a persistent streaming chat over the resume context.
 
 ---
 
-# 🚀 Key Features
+## Features
 
-## 📄 Multi-Source Candidate Ingestion
-
-Supports:
-
-* Resume (PDF, DOCX)
-* Cover Letter
-* GitHub Profile
-* Portfolio Links
-
-Extracts:
-
-* Skills
-* Projects
-* Experience
-* Technologies
+- **Resume Ingestion** — Upload PDF/DOCX; text is extracted, chunked, and embedded into ChromaDB per session
+- **GitHub Integration** — Fetch public repos, READMEs, languages for deeper candidate insight
+- **Job Match Engine** — Two-layer evaluation: deterministic skill matching (semantic + regex) weighted at 70%, plus LLM-powered reasoning for report and questions
+- **Structured Dashboard** — Circular score gauge, skill tag clouds (matched/missing), GitHub signals, AI report, accordion interview questions
+- **Streaming Chat** — Resume-aware conversational follow-ups with full markdown rendering and persistent session history
+- **PDF Export** — Download the full report as a pixel-perfect A4 PDF
+- **Session Isolation** — Each candidate is a unique session; closing it erases all vectors and history
 
 ---
 
-## 🧠 RAG-Powered Candidate Intelligence
+## Tech Stack
 
-Uses:
-
-* Semantic chunking
-* Vector embeddings
-* Retrieval-based reasoning
-
-Allows recruiters to ask:
-
-* "What are this candidate's strongest skills?"
-* "Summarize their backend experience"
-* "What technologies does this candidate use most?"
-
----
-
-## 📊 Job Fit Evaluation Engine
-
-Compares candidate profile with job descriptions.
-
-Generates:
-
-* Match Score (0–100)
-* Skill Alignment
-* Missing Skills
-* Strengths & Risks
-* Hiring Recommendation
+| Layer | Technology |
+|-------|-----------|
+| **Frontend** | React 19, React Router 7, Tailwind CSS 3, Framer Motion |
+| **Backend** | FastAPI, Python 3.11, Uvicorn |
+| **LLM** | Mistral Large 3 (675B) via NVIDIA API |
+| **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 |
+| **Semantic Matching** | BAAI/bge-small-en-v1.5 |
+| **Vector DB** | ChromaDB (persistent) |
+| **PDF Export** | html2canvas-pro + jsPDF |
+| **Markdown Rendering** | react-markdown + remark-gfm |
+| **File Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
 
 ---
 
-## 🔍 Explainable AI
+## Scoring Formula
 
-Shows:
-
-* Retrieved document chunks
-* Reasoning behind decisions
-* Transparent evaluation logic
-
----
-
-# 🏗 System Architecture
-
-Frontend (React)
-↓
-Backend (FastAPI)
-↓
-Data Processing Pipeline
-↓
-Vector Database (ChromaDB)
-↓
-LLM Reasoning Engine
+```
+final_score = (skill_score × 0.7) + (document_score × 0.3)
+skill_score = (required_match × 0.7) + (optional_match × 0.3)
+document_score = cosine_similarity(JD_embedding, resume_embedding)
+```
 
 ---
 
-# 🛠 Tech Stack
+## Project Structure
 
-## Backend
-
-* FastAPI
-* PyMuPDF (PDF parsing)
-* python-docx (DOCX parsing)
-* ChromaDB (Vector Database)
-* GitHub REST API
-* OpenAI / Open Source LLM
-
-## Frontend
-
-* React
-* Tailwind CSS
-* Axios
-
-## AI Components
-
-* Retrieval-Augmented Generation (RAG)
-* Embeddings
-* Semantic Search
-
----
-
-# 📂 Project Structure
-
-ai-recruiter-intelligence-assistant/
-
-backend/
+```
+├── backend/
+│   ├── main.py                  # FastAPI app, CORS, lifespan cleanup
+│   ├── api/
+│   │   ├── upload.py            # POST /api/upload
+│   │   ├── match.py             # POST /api/match, /api/match/stream
+│   │   ├── chat.py              # POST /api/chat/stream
+│   │   └── session.py           # DELETE /api/session/end/{id}
+│   ├── services/
+│   │   ├── parser.py            # PDF/DOCX text extraction
+│   │   ├── chunker.py           # 500-char text windows
+│   │   ├── embedding_service.py # Embedding generation + cache
+│   │   ├── vector_store.py      # ChromaDB operations
+│   │   ├── session_store.py     # In-memory session + chat history
+│   │   ├── skills.py            # Regex-based skill extraction
+│   │   ├── semantic_matcher.py  # Semantic skill matching
+│   │   ├── weighted_skill_gap_analyzer.py  # Scoring engine
+│   │   ├── jd_skill_classifier.py  # Required vs optional
+│   │   ├── matcher.py           # Orchestrator
+│   │   ├── llm_service.py       # Mistral via NVIDIA API
+│   │   └── github_service.py    # GitHub API client
+│   ├── data/                    # skills.json, skill_aliases.json
+│   ├── services/.env            # LLM_API_KEY
+│   └── .env.example
 │
-├── api/
-├── services/
-├── db/
-├── models/
-├── utils/
-│
-└── main.py
-
-frontend/
-│
-└── src/
-
----
-
-# 🎯 Project Goals
-
-This project demonstrates:
-
-* Real-world AI system architecture
-* RAG pipeline implementation
-* Multi-source data ingestion
-* LLM integration
-* Explainable AI reasoning
-* Production-style backend design
+├── frontend/recruiter-ui/
+│   ├── src/pages/
+│   │   ├── UploadPage.jsx       # Resume + JD + GitHub input
+│   │   └── Dashboard.jsx        # Scores, skills, report, chat
+│   ├── src/components/
+│   │   ├── ScoreGauge.jsx       # Circular SVG gauge
+│   │   ├── SkillsSection.jsx    # Required / Matched / Missing tags
+│   │   ├── GithubSection.jsx    # GitHub signals panel
+│   │   ├── ReportSection.jsx    # AI strengths/weaknesses/recommendation
+│   │   ├── QuestionsSection.jsx # Accordion interview questions
+│   │   └── ChatSection.jsx      # Streaming markdown chat
+│   ├── src/utils/
+│   │   └── pdfGenerator.js      # PDF export
+│   └── tailwind.config.js
+```
 
 ---
 
-# 🧭 Development Roadmap
+## Running Locally
 
-## Phase 1 — Core RAG Pipeline
+```bash
+# Backend
+cd backend
+pip install -r requirements.txt
+# Set LLM_API_KEY in services/.env
+uvicorn main:app --reload --port 8000
 
-* File upload
-* Resume parsing
-* Chunking
-* Embedding generation
-* Vector storage
+# Frontend
+cd frontend/recruiter-ui
+npm install
+npm start
+```
 
-## Phase 2 — GitHub Integration
-
-* Repository extraction
-* README ingestion
-* Language analysis
-## 🚀 GitHub Repository Intelligence
-
-  The system can ingest GitHub repositories and understand project-level details.
-  
-  ### Features
-  
-  - Fetches public repositories
-  - Reads README files
-  - Extracts project descriptions
-  - Performs semantic search across:
-    - Resume
-    - GitHub Projects
-  
-  ### Example Workflow
-  
-  1. Upload resume
-  2. Ingest GitHub username
-  3. Search for technologies or projects
-  
-  Example:
-  
-  Search Query:
-  react dashboard
-  
-  Result:
-  Returns matching resume and GitHub project details.
-
-## Phase 3 — Job Matching Engine
-
-* Job description ingestion
-* Candidate scoring
-
-## Phase 4 — Explainable AI
-
-* Retrieval transparency
-* Evaluation reasoning
-
-## Phase 5 — Frontend Dashboard
-
-* Chat UI
-* Progress tracker
-* Candidate insights
+Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
-# 📌 Status
+## Author
 
-🚧 Phase 1 — Backend Development Started
-
----
-
-# 👤 Author
-Darren Dsa
-GitHub: [https://github.com/DarrenDsa6](https://github.com/DarrenDsa6)
-
----
+**Darren Dsa** — [GitHub](https://github.com/DarrenDsa6)
