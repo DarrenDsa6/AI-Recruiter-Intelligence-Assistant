@@ -1,59 +1,63 @@
 from fastapi import APIRouter, UploadFile, File
+import logging
 
 from services.parser import ParserService
 from services.chunker import ChunkerService
-from services.embedding_service import EmbedderService
-from services.vector_store import VectorStoreService
+from services.embedding_service import embedder
+from services.vector_store import vector_store
 from services.skills import SkillExtractionService
-from services.session_store import SessionStore
+from services.session_store import session_store
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 parser = ParserService()
 chunker = ChunkerService()
-embedder = EmbedderService()
-vector_store = VectorStoreService()
 skill_extractor = SkillExtractionService()
-session_store = SessionStore()
+
 
 @router.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
-    content = await file.read()
-    text = parser.parse_file(
-        file_bytes=content,
-        filename=file.filename
-    )
+    try:
+        content = await file.read()
+        text = parser.parse_file(
+            file_bytes=content,
+            filename=file.filename
+        )
 
-    resume_skills = skill_extractor.extract_skills(text)
-    chunks = chunker.chunk_text(text)
+        resume_skills = skill_extractor.extract_skills(text)
+        chunks = chunker.chunk_text(text)
 
-    if not chunks:
-        return {"error": "Chunking failed"}
+        if not chunks:
+            return {"error": "Chunking failed"}
 
-    embeddings = embedder.embed_documents(chunks)
+        embeddings = embedder.embed_documents(chunks)
 
-    if not embeddings:
-        return {"error": "Embedding failed"}
+        if not embeddings:
+            return {"error": "Embedding failed"}
 
-    # CREATE SESSION FIRST
-    session_id = session_store.create_session()
+        session_id = session_store.create_session()
 
-    # STORE WITH SESSION
-    vector_store.add_documents(
-        documents=chunks,
-        embeddings=embeddings,
-        metadatas=[
-            {
-                "source": "resume",
-                "skills": resume_skills
-            }
-            for _ in chunks
-        ],
-        session_id=session_id
-    )
+        vector_store.add_documents(
+            documents=chunks,
+            embeddings=embeddings,
+            metadatas=[
+                {
+                    "source": "resume",
+                    "skills": resume_skills
+                }
+                for _ in chunks
+            ],
+            session_id=session_id
+        )
 
-    return {
-        "session_id": session_id,
-        "filename": file.filename,
-        "skills": resume_skills
-    }
+        logger.info(f"Session {session_id}: {len(chunks)} chunks stored for {file.filename}")
+
+        return {
+            "session_id": session_id,
+            "filename": file.filename,
+            "skills": resume_skills
+        }
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        return {"error": str(e)}

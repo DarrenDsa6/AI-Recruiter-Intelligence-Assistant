@@ -1,62 +1,52 @@
 import numpy as np
-from openai import embeddings
-from openai import embeddings
 from sklearn.metrics.pairwise import cosine_similarity
+import logging
 
-from services.vector_store import VectorStoreService
+from services.vector_store import vector_store
 from services.skills import SkillExtractionService
 from services.semantic_matcher import SemanticMatcher
 from services.jd_skill_classifier import JDSkillClassifier
 from services.weighted_skill_gap_analyzer import WeightedSkillGapAnalyzer
-from services.embedding_service import EmbedderService
+from services.embedding_service import embedder
 from services.explainer import MatchExplainer
+
+logger = logging.getLogger(__name__)
 
 
 class MatcherService:
 
     def __init__(self, llm_service):
-        print("Initializing Matcher Service...")
+        logger.info("Initializing Matcher Service...")
 
-        # Core services (deterministic layer)
-        self.vector_store = VectorStoreService()
+        self.vector_store = vector_store
         self.skill_extractor = SkillExtractionService()
         self.semantic_matcher = SemanticMatcher()
         self.jd_classifier = JDSkillClassifier()
         self.weighted_analyzer = WeightedSkillGapAnalyzer()
-        self.embedding_service = EmbedderService()
+        self.embedding_service = embedder
         self.explainer = MatchExplainer()
 
-        # LLM layer (intelligence layer)
         self.llm = llm_service
 
-    # CORE MATCHING ENGINE (deterministic logic)
     def compute_similarity(self, job_description, session_id):
-
         stored_data = self.vector_store.get_by_session(session_id)
 
-        embeddings = stored_data.get("embeddings")
+        vecs = stored_data.get("embeddings")
         documents = stored_data.get("documents", [])
         metadatas = stored_data.get("metadatas", [])
 
-        if embeddings is None or len(embeddings) == 0:
+        if vecs is None or len(vecs) == 0:
             raise ValueError("No embeddings found for session")
 
-        # reconstruct resume text (needed for skills + LLM)
         resume_text = " ".join(documents)
 
-        # aggregate embeddings (NO recompute)
-        resume_embedding = self.aggregate_embeddings(
-            embeddings,
-            metadatas
-        )
+        resume_embedding = self.aggregate_embeddings(vecs, metadatas)
 
-        # Resume skills
         if metadatas and "skills" in metadatas[0]:
             resume_skills = metadatas[0]["skills"]
         else:
             resume_skills = self.skill_extractor.extract_skills(resume_text)
 
-        # JD skills
         jd_skills = self.skill_extractor.extract_skills(job_description)
 
         jd_classification = self.jd_classifier.classify_skills(
@@ -67,20 +57,17 @@ class MatcherService:
         required_skills = jd_classification["required"]
         optional_skills = jd_classification["optional"]
 
-        # Semantic matching
         matched_skills = self.semantic_matcher.semantic_skill_match(
             resume_skills,
             jd_skills
         )
 
-        # Weighted analysis
         weighted_result = self.weighted_analyzer.analyze(
             required_skills,
             optional_skills,
             matched_skills
         )
 
-        # JD embedding ONLY (correct)
         jd_embedding = self.embedding_service.get_embeddings(
             [job_description]
         )[0]
@@ -97,7 +84,6 @@ class MatcherService:
         final_score = (skill_score * 0.7) + (doc_score * 0.3)
         final_percent = round(final_score * 100, 2)
 
-        # Explanation
         explanation = self.explainer.generate_explanation(
             matched_skills=matched_skills,
             missing_skills=(
@@ -120,17 +106,13 @@ class MatcherService:
             "recommendations": weighted_result["recommendations"]
         }
 
-    # FULL AI PIPELINE (LLM + deterministic engine)
     def full_analysis(self, resume, jd, github_data, session_id):
-
-    # extract text properly
         jd_text = jd["text"]
 
-        # 1. deterministic match
         match_result = self.compute_similarity(
-        job_description=jd_text,
-        session_id=session_id
-    )
+            job_description=jd_text,
+            session_id=session_id
+        )
 
         github_analysis = self.llm.analyze_github_repos(github_data)
 
@@ -154,10 +136,10 @@ class MatcherService:
             "report": report,
             "questions": questions
         }
-    
+
     def aggregate_embeddings(self, embeddings, metadatas):
         weighted = []
-        
+
         for emb, meta in zip(embeddings, metadatas):
             weight = 1 + meta.get("chunk_index", 0) * 0.1
             weighted.append(emb * weight)

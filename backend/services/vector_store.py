@@ -12,14 +12,7 @@ class VectorStoreService:
             name="ai_recruiter_collection"
         )
 
-    # Add Documents (SESSION BASED)
-    def add_documents(
-        self,
-        documents,
-        embeddings,
-        metadatas=None,
-        session_id=None
-    ):
+    def add_documents(self, documents, embeddings, metadatas=None, session_id=None):
         if not documents:
             raise ValueError("No documents provided")
 
@@ -59,7 +52,6 @@ class VectorStoreService:
 
         return session_id
 
-    # Get All Text by Session
     def get_session_text(self, session_id):
         results = self.collection.get(
             where={"session_id": session_id}
@@ -72,7 +64,6 @@ class VectorStoreService:
 
         return " ".join(docs)
 
-    # Delete Entire Session
     def delete_by_session(self, session_id):
         results = self.collection.get(
             where={"session_id": session_id}
@@ -84,10 +75,13 @@ class VectorStoreService:
 
         self.collection.delete(ids=ids)
         return len(ids)
-    
+
     def get_by_session(self, session_id):
         results = self.collection.get(
             where={"session_id": session_id},
             include=["documents", "embeddings", "metadatas"]
         )
         return results
+
+
+vector_store = VectorStoreService()
