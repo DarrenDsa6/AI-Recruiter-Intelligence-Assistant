@@ -1,3 +1,41 @@
+function toList(v) {
+  return Array.isArray(v) ? v : (v ? [v] : []);
+}
+
+function renderItem(item) {
+  if (typeof item === "string") return item;
+  if (typeof item === "object" && item !== null) {
+    if (item.signal) {
+      const evidence = toList(item.evidence).length ? ": " + toList(item.evidence).join(" ") : "";
+      return item.signal + evidence;
+    }
+    if (item.project) {
+      let text = item.project;
+      if (item.skills?.length) text += " — " + toList(item.skills).join(", ");
+      if (item.details) text += ": " + (Array.isArray(item.details) ? item.details.join("; ") : item.details);
+      if (item.minor_issue) text += " (issue: " + item.minor_issue + ")";
+      if (item.positive) text += " — " + item.positive;
+      return text;
+    }
+    if (item.category) {
+      let text = item.category;
+      if (item.skills?.length) text += " — " + toList(item.skills).join(", ");
+      if (item.projects?.length) text += " (projects: " + toList(item.projects).join(", ") + ")";
+      if (item.observation) text += " — " + item.observation;
+      return text;
+    }
+    if (item.status || item.next_steps || item.justification) {
+      const parts = [];
+      if (item.status) parts.push(item.status);
+      if (item.next_steps) parts.push("Next: " + item.next_steps);
+      if (item.justification) parts.push(item.justification);
+      return parts.join(" — ");
+    }
+    return item.name || item.action || item.description || item.title || item.text || JSON.stringify(item);
+  }
+  return String(item);
+}
+
 export default function GithubSection({ data }) {
   if (!data) return null;
 
@@ -26,13 +64,13 @@ export default function GithubSection({ data }) {
           {data.skill_level && (
             <div className="bg-white/5 rounded-xl p-4">
               <span className="text-xs text-gray-500 block mb-1">Skill Level</span>
-              <span className="text-sm font-medium text-gray-200">{data.skill_level}</span>
+              <span className="text-sm font-medium text-gray-200">{renderItem(data.skill_level)}</span>
             </div>
           )}
           {data.best_project && (
             <div className="bg-white/5 rounded-xl p-4">
               <span className="text-xs text-gray-500 block mb-1">Best Project</span>
-              <span className="text-sm font-medium text-gray-200">{data.best_project}</span>
+              <span className="text-sm font-medium text-gray-200">{renderItem(data.best_project)}</span>
             </div>
           )}
         </div>
@@ -44,7 +82,7 @@ export default function GithubSection({ data }) {
               {strong.map((s, i) => (
                 <li key={i} className="text-sm text-emerald-300/80 flex items-start gap-2">
                   <span className="mt-0.5">+</span>
-                  <span>{s}</span>
+                  <span>{renderItem(s)}</span>
                 </li>
               ))}
             </ul>
@@ -58,7 +96,7 @@ export default function GithubSection({ data }) {
               {weak.map((s, i) => (
                 <li key={i} className="text-sm text-red-300/80 flex items-start gap-2">
                   <span className="mt-0.5">−</span>
-                  <span>{s}</span>
+                  <span>{renderItem(s)}</span>
                 </li>
               ))}
             </ul>

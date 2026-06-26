@@ -1,8 +1,13 @@
+import os
 import requests
 
 class GitHubService:
-    def __init__(self):
+    def __init__(self, token=None):
         self.base_url = "https://api.github.com"
+        self.session = requests.Session()
+        token = token or os.environ.get("GITHUB_TOKEN")
+        if token:
+            self.session.headers.update({"Authorization": f"Bearer {token}"})
 
     # -----------------------------
     # 1. Get repositories (enriched)
@@ -10,7 +15,7 @@ class GitHubService:
     def get_repositories(self, username):
 
         url = f"{self.base_url}/users/{username}/repos"
-        response = requests.get(url)
+        response = self.session.get(url)
 
         if response.status_code != 200:
             raise Exception("Failed to fetch repositories")
@@ -49,7 +54,7 @@ class GitHubService:
     # 2. Languages API
     # -----------------------------
     def get_languages(self, languages_url):
-        response = requests.get(languages_url)
+        response = self.session.get(languages_url)
 
         if response.status_code != 200:
             return {}
@@ -63,11 +68,7 @@ class GitHubService:
 
         url = f"{self.base_url}/repos/{username}/{repo_name}/readme"
 
-        headers = {
-            "Accept": "application/vnd.github.v3.raw"
-        }
-
-        response = requests.get(url, headers=headers)
+        response = self.session.get(url, headers={"Accept": "application/vnd.github.v3.raw"})
 
         if response.status_code == 200:
             return response.text

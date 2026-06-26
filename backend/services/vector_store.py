@@ -83,5 +83,14 @@ class VectorStoreService:
         )
         return results
 
+    def query_by_session(self, session_id, query_embedding, top_k=5):
+        results = self.collection.query(
+            query_embeddings=[query_embedding],
+            where={"session_id": session_id},
+            n_results=top_k,
+            include=["documents", "distances", "metadatas"]
+        )
+        return results
+
 
 vector_store = VectorStoreService()

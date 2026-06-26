@@ -9,7 +9,7 @@ export default function SkillTags({ title, skills, color }) {
             key={i}
             className={`px-3 py-1 rounded text-sm ${color}`}
           >
-            {skill}
+            {typeof skill === "string" ? skill : skill.name || JSON.stringify(skill)}
           </span>
         ))}
       </div>

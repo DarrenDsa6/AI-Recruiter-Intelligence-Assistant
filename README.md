@@ -7,10 +7,10 @@ An end-to-end AI-powered candidate screening platform. Upload a resume, paste a 
 ## Features
 
 - **Resume Ingestion** — Upload PDF/DOCX; text is extracted, chunked, and embedded into ChromaDB per session
-- **GitHub Integration** — Fetch public repos, READMEs, languages for deeper candidate insight
+- **GitHub Integration** — Fetch public repos, READMEs, languages for deeper candidate insight. Supports authenticated requests via frontend token input or `GITHUB_TOKEN` env var for higher rate limits.
 - **Job Match Engine** — Two-layer evaluation: deterministic skill matching (semantic + regex) weighted at 70%, plus LLM-powered reasoning for report and questions
 - **Structured Dashboard** — Circular score gauge, skill tag clouds (matched/missing), GitHub signals, AI report, accordion interview questions
-- **Streaming Chat** — Resume-aware conversational follow-ups with full markdown rendering and persistent session history
+- **Streaming Chat** — Resume-aware conversational follow-ups with full markdown rendering and persistent session history. Features a full-screen popup mode for focused conversation.
 - **PDF Export** — Download the full report as a pixel-perfect A4 PDF
 - **Session Isolation** — Each candidate is a unique session; closing it erases all vectors and history
 
@@ -29,6 +29,7 @@ An end-to-end AI-powered candidate screening platform. Upload a resume, paste a 
 | **PDF Export** | html2canvas-pro + jsPDF |
 | **Markdown Rendering** | react-markdown + remark-gfm |
 | **File Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
+| **External APIs** | GitHub REST API (optional auth via token) |
 
 ---
 

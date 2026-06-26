@@ -16,6 +16,7 @@ export default function Dashboard() {
 
   const sessionId = state?.sessionId || localStorage.getItem("session_id");
   const github = state?.github || localStorage.getItem("github_username") || "";
+  const githubToken = state?.githubToken || localStorage.getItem("github_token") || "";
   const jd = state?.jd || localStorage.getItem("job_description") || "";
 
   const [loading, setLoading] = useState(true);
@@ -33,6 +34,7 @@ export default function Dashboard() {
 
     localStorage.removeItem("session_id");
     localStorage.removeItem("github_username");
+    localStorage.removeItem("github_token");
     localStorage.removeItem("job_description");
 
     const fetchMatch = async () => {
@@ -46,6 +48,7 @@ export default function Dashboard() {
             session_id: sessionId,
             job_description: jd,
             github_username: github || null,
+            github_token: githubToken || null,
           }),
         });
 
@@ -67,7 +70,7 @@ export default function Dashboard() {
     };
 
     fetchMatch();
-  }, [sessionId, jd, github]);
+  }, [sessionId, jd, github, githubToken]);
 
   const handleEndSession = useCallback(async () => {
     try {
@@ -214,7 +217,7 @@ export default function Dashboard() {
                   {match.recommendations.map((r, i) => (
                     <li key={i} className="flex items-start gap-2 text-sm text-gray-400">
                       <span className="text-amber-400 mt-0.5 shrink-0">→</span>
-                      <span>{r}</span>
+                      <span>{typeof r === "string" ? r : r.status || r.name || r.description || r.justification || r.next_steps || JSON.stringify(r)}</span>
                     </li>
                   ))}
                 </ul>

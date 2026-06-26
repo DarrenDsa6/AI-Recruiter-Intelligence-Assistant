@@ -6,14 +6,14 @@ export default function QuestionsPanel({ questions }) {
       <h3 className="font-semibold">Technical</h3>
       <ul className="list-disc ml-5 mb-4">
         {questions.technical?.slice(0, 5).map((q, i) => (
-          <li key={i}>{q}</li>
+          <li key={i}>{typeof q === "string" ? q : q.question || q.name || JSON.stringify(q)}</li>
         ))}
       </ul>
 
       <h3 className="font-semibold">Behavioral</h3>
       <ul className="list-disc ml-5">
         {questions.behavioral?.slice(0, 5).map((q, i) => (
-          <li key={i}>{q}</li>
+          <li key={i}>{typeof q === "string" ? q : q.question || q.name || JSON.stringify(q)}</li>
         ))}
       </ul>
     </div>

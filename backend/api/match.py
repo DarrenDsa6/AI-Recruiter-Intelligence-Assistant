@@ -20,6 +20,7 @@ class MatchRequest(BaseModel):
     session_id: str
     job_description: str
     github_username: str | None = None
+    github_token: str | None = None
 
 
 @router.post("/match")
@@ -38,7 +39,8 @@ async def match_job_description(request: MatchRequest):
 
     if request.github_username:
         try:
-            github_data = github_service.get_repositories(request.github_username)
+            gh_service = GitHubService(token=request.github_token) if request.github_token else github_service
+            github_data = gh_service.get_repositories(request.github_username)
             logger.info(f"GitHub: {len(github_data)} repos for {request.github_username}")
         except Exception as e:
             logger.error(f"GitHub error: {e}")

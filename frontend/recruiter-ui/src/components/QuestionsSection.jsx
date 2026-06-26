@@ -26,7 +26,7 @@ function QuestionGroup({ title, items, color, defaultOpen }) {
           {items.map((q, i) => (
             <div key={i} className="flex items-start gap-2 text-sm">
               <span className="text-gray-600 shrink-0 mt-0.5">{i + 1}.</span>
-              <span className="text-gray-300">{typeof q === "string" ? q : q.question}</span>
+              <span className="text-gray-300">{typeof q === "string" ? q : (typeof q.question === "string" ? q.question : JSON.stringify(q.question))}</span>
             </div>
           ))}
         </div>

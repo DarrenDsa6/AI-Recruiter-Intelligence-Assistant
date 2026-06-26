@@ -34,7 +34,7 @@ export async function endSession(sessionId) {
   });
 }
 
-export function matchStream(sessionId, jobDescription, githubUsername) {
+export function matchStream(sessionId, jobDescription, githubUsername, githubToken) {
   return fetch(`${BASE_URL}/match/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -42,6 +42,7 @@ export function matchStream(sessionId, jobDescription, githubUsername) {
       session_id: sessionId,
       job_description: jobDescription,
       github_username: githubUsername || null,
+      github_token: githubToken || null,
     }),
   });
 }

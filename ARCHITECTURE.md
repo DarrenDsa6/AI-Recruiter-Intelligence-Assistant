@@ -39,7 +39,7 @@ Return session_id to frontend
 ### 2. Match Analysis (`POST /api/match`)
 
 ```
-Frontend sends session_id + job_description + github_username
+Frontend sends session_id + job_description + github_username + github_token
         │
         ▼
 Load resume chunks + embeddings from ChromaDB (by session_id)
@@ -60,6 +60,10 @@ Load resume chunks + embeddings from ChromaDB (by session_id)
                        ▼
          Return structured JSON:
          { match, github, report, questions }
+
+GitHub Token: supplied via frontend input or GITHUB_TOKEN env var.
+GitHubService creates an authenticated requests.Session when a token is present,
+enabling higher API rate limits and access to private repositories.
 ```
 
 ### 3. Follow-Up Chat (`POST /api/chat/stream`)
@@ -72,8 +76,15 @@ Load resume context from ChromaDB
 Load conversation history from session store
         │
         ▼
+Embed user query (all-MiniLM-L6-v2)
+        │
+        ▼
+Retrieve top-5 relevant chunks via ChromaDB vector search (cosine similarity)
+(if no results, falls back to full resume text)
+        │
+        ▼
 Build LLM messages:
-  system (resume context) + history + user question
+  system (RAG context) + history + user question
         │
         ▼
 Stream tokens via SSE (data: {...} format)
@@ -81,6 +92,9 @@ Stream tokens via SSE (data: {...} format)
         ▼
 Save user + assistant messages to session store
 ```
+
+The frontend ChatSection features a **full-screen popup mode** — clicking the expand
+icon opens the chat as a centered overlay at 95vw × 90vh with a dark backdrop.
 
 ### 4. Session Cleanup
 
@@ -182,6 +196,10 @@ AI-Recruiter-Intelligence-Assistant/
 4. **Skill normalization**: A curated `skill_aliases.json` maps variations (e.g., "JS" → "JavaScript") for consistent matching. Semantic matching catches synonyms via embeddings.
 
 5. **PDF export**: The report can be downloaded as a pixel-perfect A4 PDF capturing all styled components exactly as rendered.
+
+6. **Error-resilient rendering**: All LLM-driven array data (strengths, weaknesses, signals, recommendations, questions, skills) passes through a `renderItem` helper with a `toList` guard. This handles the LLM's inconsistent output formats — whether it returns strings, objects, or arrays — without crashing or showing raw JSON. Supported object shapes include `{category, details, skills, projects}`, `{signal, evidence}`, `{project, skills, details}`, `{status, next_steps, justification}`, and flat `{name, description, text}` fallbacks.
+
+7. **Authenticity score normalization**: The LLM may return `authenticity_score` on either a 0-10 or 0-100 scale. The frontend normalizes values > 10 by dividing by 10 before display.
 
 ---
 

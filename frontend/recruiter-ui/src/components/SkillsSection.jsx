@@ -9,7 +9,7 @@ function SkillTag({ label, variant = "default" }) {
 
   return (
     <span className={`inline-block px-3 py-1 rounded-full text-xs font-medium ${styles[variant] || styles.default}`}>
-      {label}
+      {typeof label === "string" ? label : label.name || JSON.stringify(label)}
     </span>
   );
 }

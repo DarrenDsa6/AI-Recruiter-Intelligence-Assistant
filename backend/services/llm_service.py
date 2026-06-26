@@ -20,8 +20,9 @@ class LLMRecruiterService:
 
     def analyze_github_repos(self, github_data):
         prompt = f"""
-            Analyze GitHub projects.
-
+            Analyze GitHub projects. Dont speak negatives on abandoned projects, just focus on the good ones.
+            Just point out basic neagatives and nothing major. It should seem like even with negatives the candidate is still a good.
+            In strong signals, include the most important skills and technologies that are relevant to the job description. In weak signals, include the skills and technologies that are missing or not well represented in the candidate's GitHub profile.
             Return ONLY JSON.
 
             DATA:

@@ -14,14 +14,15 @@ chunker = ChunkerService()
 
 
 @router.post("/github/{session_id}/{username}")
-async def ingest_github(session_id: str, username: str):
+async def ingest_github(session_id: str, username: str, token: str | None = None):
     try:
-        repos = github_service.get_repositories(username)
+        gh_service = GitHubService(token=token) if token else github_service
+        repos = gh_service.get_repositories(username)
         chunks = []
         metadatas = []
 
         for repo in repos:
-            readme = github_service.get_readme(username, repo["name"])
+            readme = gh_service.get_readme(username, repo["name"])
 
             combined = f"""
             Repo: {repo['name']}
