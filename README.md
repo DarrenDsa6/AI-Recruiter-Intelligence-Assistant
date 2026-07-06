@@ -1,18 +1,20 @@
 # AI Recruiter Intelligence Assistant
 
-An end-to-end AI-powered candidate screening platform. Upload a resume, paste a job description, and get a structured match analysis with scores, skill gaps, GitHub insights, interview questions, and a streaming chat over the resume context.
+An end-to-end AI-powered candidate screening platform. Upload a resume, paste a job description, and get a structured match analysis with scores, skill gaps, GitHub insights, interview questions, and a streaming chat over the resume context. All LLM calls are async with parallel report and question generation.
 
 ---
 
 ## Features
 
-- **Resume Ingestion** — Upload PDF/DOCX; text is extracted, chunked, and embedded into ChromaDB per session
-- **GitHub Integration** — Fetch public repos, READMEs, languages for deeper candidate insight. Supports authenticated requests via frontend token input or `GITHUB_TOKEN` env var for higher rate limits.
-- **Job Match Engine** — Two-layer evaluation: deterministic skill matching (semantic + regex) weighted at 70%, plus LLM-powered reasoning for report and questions
-- **Structured Dashboard** — Circular score gauge, skill tag clouds (matched/missing), GitHub signals, AI report, accordion interview questions
-- **Streaming Chat** — Resume-aware conversational follow-ups with full markdown rendering and persistent session history. Features a full-screen popup mode for focused conversation.
-- **PDF Export** — Download the full report as a pixel-perfect A4 PDF
-- **Session Isolation** — Each candidate is a unique session; closing it erases all vectors and history
+- **Resume Ingestion** - Upload PDF/DOCX; text is extracted, chunked, and embedded into ChromaDB per session
+- **GitHub Integration** - Fetch public repos, READMEs, languages for deeper candidate insight. Supports authenticated requests via frontend token input or `GITHUB_TOKEN` env var for higher rate limits.
+- **Job Match Engine** - Two-layer evaluation: deterministic skill matching (semantic + regex) weighted at 70%, plus async LLM-powered reasoning for report and questions (parallel via asyncio.gather)
+- **Structured Dashboard** - Circular score gauge, skill tag clouds (matched/missing), GitHub signals, AI report, accordion interview questions
+- **Streaming Chat** - Resume-aware conversational follow-ups with full markdown rendering and persistent session history. Features a full-screen popup mode for focused conversation.
+- **PDF Export** - Download the full report as a pixel-perfect A4 PDF
+- **Session Isolation** - Each candidate is a unique session; closing it erases all vectors and history
+- **Model Pre-Warming** - Embedding model loads during startup, not on first request (no cold-start delay)
+- **Auto-Retry on Cold Start** - Frontend retries failed requests up to 2x with 10s delay for Render spin-up
 
 ---
 
@@ -107,6 +109,28 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
+## Deployment
+
+### Render (Backend)
+
+1. Push the repo to GitHub and connect it to [Render](https://render.com).
+2. Create a new **Web Service** with `render.yaml` or manually:
+   - **Runtime:** Python 3.11
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
+   - **Health Check:** `/api/health`
+3. Set environment variables:
+   - `CORS_ORIGINS` - your Vercel frontend URL
+4. (Optional) Set up a free [UptimeRobot](https://uptimerobot.com) ping to `/api/health` every 10 min to prevent the free tier from spinning down.
+
+### Vercel (Frontend)
+
+1. Connect the `frontend/recruiter-ui` folder to [Vercel](https://vercel.com).
+2. Set environment variable `REACT_APP_API_URL` to `https://your-backend.onrender.com/api`.
+3. Deploy.
+
+---
+
 ## Author
 
-**Darren Dsa** — [GitHub](https://github.com/DarrenDsa6)
+**Darren Dsa** - [GitHub](https://github.com/DarrenDsa6)

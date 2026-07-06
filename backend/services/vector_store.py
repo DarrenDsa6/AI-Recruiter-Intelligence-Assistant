@@ -3,7 +3,9 @@ import uuid
 
 class VectorStoreService:
     def __init__(self):
-        self.client = chromadb.Client()
+        self.client = chromadb.Client(
+            settings=chromadb.Settings(anonymized_telemetry=False)
+        )
         self.collection = self.client.get_or_create_collection(
             name="ai_recruiter_collection"
         )

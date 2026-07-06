@@ -14,6 +14,7 @@ from api.models import router as models_router
 
 from services.session_store import session_store
 from services.vector_store import vector_store
+from services.model_registry import ModelRegistry, DOC_EMBEDDING_MODEL
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +42,11 @@ async def cleanup_sessions():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Pre-warming embedding model...")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, ModelRegistry.get, DOC_EMBEDDING_MODEL)
+    logger.info("Embedding model loaded")
+
     logger.info("Starting cleanup worker...")
     task = asyncio.create_task(cleanup_sessions())
 

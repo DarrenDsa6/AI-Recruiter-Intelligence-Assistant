@@ -74,12 +74,13 @@ export default function UploadPage() {
       formData.append("file", file);
 
       const res = await fetch(`${API}/upload`, { method: "POST", body: formData });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Upload failed");
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Upload failed");
       }
 
-      const { session_id } = await res.json();
+      const { session_id } = data;
 
       localStorage.setItem("session_id", session_id);
       if (github) localStorage.setItem("github_username", github);

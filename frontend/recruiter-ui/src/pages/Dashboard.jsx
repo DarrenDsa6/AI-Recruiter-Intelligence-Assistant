@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import ScoreGauge from "../components/ScoreGauge";
 import SkillsSection from "../components/SkillsSection";
@@ -26,22 +26,35 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
-  const [status, setStatus] = useState("Loading...");
+  const [status, setStatus] = useState("Starting analysis...");
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     if (!sessionId) navigate("/", { replace: true });
   }, [sessionId, navigate]);
 
+  const retryRef = useRef(0);
+
   useEffect(() => {
     if (!sessionId) return;
 
-    const fetchMatch = async () => {
+    let cancelled = false;
+
+    const fetchMatch = async (isRetry = false) => {
       try {
-        setStatus("Analyzing resume against job description...");
+        setStatus(
+          isRetry
+            ? "Server is waking up, retrying..."
+            : "Waking up server, loading AI model..."
+        );
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 180000);
 
         const res = await fetch(`${API}/match`, {
           method: "POST",
+          signal: controller.signal,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             session_id: sessionId,
@@ -55,10 +68,14 @@ export default function Dashboard() {
           }),
         });
 
+        clearTimeout(timeout);
+
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.error || `Server error: ${res.status}`);
         }
+
+        if (cancelled) return;
 
         const result = await res.json();
         setData(result);
@@ -68,16 +85,28 @@ export default function Dashboard() {
         localStorage.removeItem("github_token");
         localStorage.removeItem("job_description");
       } catch (err) {
+        if (cancelled) return;
+
+        if (retryRef.current < 2) {
+          retryRef.current += 1;
+          setRetryCount(retryRef.current);
+          setStatus("Server still waking up, retrying in 10s...");
+          await new Promise((r) => setTimeout(r, 10000));
+          if (!cancelled) return fetchMatch(true);
+        }
+
         console.error(err);
         setError(err.message || "Failed to analyze. Check backend connection.");
         setStatus("Error");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     fetchMatch();
-  }, [sessionId, jd, github, githubToken]);
+
+    return () => { cancelled = true; };
+  }, [sessionId, jd, github, githubToken, navigate]);
 
   const handleEndSession = useCallback(async () => {
     try {
@@ -156,7 +185,10 @@ export default function Dashboard() {
                 <div className="w-8 h-8 border-4 border-purple-500/20 border-t-purple-500 rounded-full animate-spin" style={{ animationDirection: "reverse", animationDuration: "0.8s" }} />
               </div>
             </div>
-            <p className="text-sm text-gray-500 animate-pulse">{status}</p>
+            <p className="text-sm text-gray-400 animate-pulse">{status}</p>
+            {retryCount > 0 && (
+              <p className="text-xs text-gray-600">Retry attempt {retryCount}/2</p>
+            )}
           </div>
         )}
 

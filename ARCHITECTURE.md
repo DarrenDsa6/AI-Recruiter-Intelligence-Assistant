@@ -46,15 +46,16 @@ Load resume chunks + embeddings from ChromaDB (by session_id)
         │
         ├─────────────────────────────────────┐
         ▼                                     ▼
-  Deterministic Engine                  LLM Intelligence Layer
-  ─────────────────────                 ─────────────────────
-  Skill Extraction (JD)                 analyze_github_repos()
-  JD Skill Classification               generate_candidate_report()
-    (required vs optional)              generate_interview_questions()
+  Deterministic Engine                  LLM Intelligence Layer (async)
+  ─────────────────────                 ───────────────────────────
+  Skill Extraction (JD)                 1. analyze_github_repos()
+  JD Skill Classification               2. generate_candidate_report() ┐
+    (required vs optional)              3. generate_interview_questions() ┘ parallel via asyncio.gather
   Semantic Skill Matching
-    (all-MiniLM-L6-v2, threshold 0.8)        │
-  Weighted Score Calculation                  │
-    (70% skills + 30% doc similarity)         │
+    (all-MiniLM-L6-v2, threshold 0.8)   All LLM calls use AsyncOpenAI
+  Weighted Score Calculation            (non-blocking, event loop
+    (70% skills + 30% doc similarity)    serves other requests during
+        │                                network I/O)
         │                                     │
         └──────────────┬──────────────────────┘
                        ▼
@@ -93,10 +94,28 @@ Stream tokens via SSE (data: {...} format)
 Save user + assistant messages to session store
 ```
 
-The frontend ChatSection features a **full-screen popup mode** — clicking the expand
+The frontend ChatSection features a **full-screen popup mode** - clicking the expand
 icon opens the chat as a centered overlay at 95vw × 90vh with a dark backdrop.
 
-### 4. Session Cleanup
+### 4. Model Pre-Warming (Startup)
+
+```
+Server starts
+        │
+        ▼
+lifespan() runs before accepting requests
+        │
+        ├── Pre-warm embedding model (run_in_executor)
+        │     all-MiniLM-L6-v2 → loaded into memory
+        │     First user request is instant, no download delay
+        │
+        ├── Start session cleanup background worker
+        │
+        ▼
+Ready to serve requests
+```
+
+### 5. Session Cleanup
 
 ```
 Manual:   DELETE /api/session/end/{id}  →  erase ChromaDB + session store
@@ -197,9 +216,15 @@ AI-Recruiter-Intelligence-Assistant/
 
 5. **PDF export**: The report can be downloaded as a pixel-perfect A4 PDF capturing all styled components exactly as rendered.
 
-6. **Error-resilient rendering**: All LLM-driven array data (strengths, weaknesses, signals, recommendations, questions, skills) passes through a `renderItem` helper with a `toList` guard. This handles the LLM's inconsistent output formats — whether it returns strings, objects, or arrays — without crashing or showing raw JSON. Supported object shapes include `{category, details, skills, projects}`, `{signal, evidence}`, `{project, skills, details}`, `{status, next_steps, justification}`, and flat `{name, description, text}` fallbacks.
+6. **Error-resilient rendering**: All LLM-driven array data (strengths, weaknesses, signals, recommendations, questions, skills) passes through a `renderItem` helper with a `toList` guard. This handles the LLM's inconsistent output formats - whether it returns strings, objects, or arrays - without crashing or showing raw JSON. Supported object shapes include `{category, details, skills, projects}`, `{signal, evidence}`, `{project, skills, details}`, `{status, next_steps, justification}`, and flat `{name, description, text}` fallbacks.
 
 7. **Authenticity score normalization**: The LLM may return `authenticity_score` on either a 0-10 or 0-100 scale. The frontend normalizes values > 10 by dividing by 10 before display.
+
+8. **Async LLM calls**: All LLM interactions use `AsyncOpenAI` with `asyncio.gather` for parallel execution. Report generation and interview questions run concurrently, cutting total match time from ~24s to ~16s. The event loop remains free to handle other requests during network I/O.
+
+9. **Model pre-warming**: The embedding model is loaded during `lifespan()` startup before the first request arrives. This prevents a 20-40s cold-start delay on the first user's request. Render free tier services still spin down after 15 min idle, but a free UptimeRobot ping every 10 min keeps the instance alive.
+
+10. **Frontend retry logic**: The Dashboard auto-retries failed match requests up to 2 times with a 10s delay. This handles Render cold starts gracefully - the server wakes up, loads the model, and responds on the retry.
 
 ---
 

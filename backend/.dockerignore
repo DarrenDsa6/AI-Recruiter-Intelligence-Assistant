@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 chroma_db/
+uploads/
 *.md
 *.pkl
 data/skill_embeddings.pkl

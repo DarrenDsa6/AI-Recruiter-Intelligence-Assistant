@@ -44,7 +44,7 @@ async def upload_document(file: UploadFile = File(...)):
             metadatas=[
                 {
                     "source": "resume",
-                    "skills": resume_skills
+                    "skills": ", ".join(resume_skills)
                 }
                 for _ in chunks
             ],
