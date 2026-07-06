@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import logging
+import asyncio
 
 from services.vector_store import vector_store
 from services.skills import SkillExtractionService
@@ -42,7 +43,7 @@ class MatcherService:
 
         resume_embedding = self.aggregate_embeddings(vecs, metadatas)
 
-        if metadatas and "skills" in metadatas[0]:
+        if metadatas and len(metadatas) > 0 and "skills" in metadatas[0]:
             resume_skills = metadatas[0]["skills"]
         else:
             resume_skills = self.skill_extractor.extract_skills(resume_text)
@@ -106,7 +107,7 @@ class MatcherService:
             "recommendations": weighted_result["recommendations"]
         }
 
-    def full_analysis(self, resume, jd, github_data, session_id):
+    async def full_analysis(self, resume, jd, github_data, session_id, api_key, base_url, model):
         jd_text = jd["text"]
 
         match_result = self.compute_similarity(
@@ -114,20 +115,17 @@ class MatcherService:
             session_id=session_id
         )
 
-        github_analysis = self.llm.analyze_github_repos(github_data)
+        github_analysis = await self.llm.analyze_github_repos(github_data, api_key, base_url, model)
 
-        report = self.llm.generate_candidate_report(
-            resume=resume["text"],
-            jd=jd_text,
-            match_result=match_result,
-            github_context=github_analysis
-        )
-
-        questions = self.llm.generate_interview_questions(
-            resume=resume["text"],
-            jd=jd_text,
-            missing_skills=match_result["missing_required"],
-            github_context=github_analysis
+        report, questions = await asyncio.gather(
+            self.llm.generate_candidate_report(
+                resume["text"], jd_text, match_result, github_analysis,
+                api_key, base_url, model
+            ),
+            self.llm.generate_interview_questions(
+                resume["text"], jd_text, match_result["missing_required"], github_analysis,
+                api_key, base_url, model
+            )
         )
 
         return {
@@ -138,10 +136,4 @@ class MatcherService:
         }
 
     def aggregate_embeddings(self, embeddings, metadatas):
-        weighted = []
-
-        for emb, meta in zip(embeddings, metadatas):
-            weight = 1 + meta.get("chunk_index", 0) * 0.1
-            weighted.append(emb * weight)
-
-        return np.mean(weighted, axis=0)
+        return np.mean(embeddings, axis=0)

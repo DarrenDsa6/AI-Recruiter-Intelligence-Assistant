@@ -1,0 +1,13 @@
+.git/
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+node_modules/
+build/
+chroma_db/
+*.md
+*.png
+*.pkl

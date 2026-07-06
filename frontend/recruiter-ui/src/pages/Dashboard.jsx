@@ -18,6 +18,10 @@ export default function Dashboard() {
   const github = state?.github || localStorage.getItem("github_username") || "";
   const githubToken = state?.githubToken || localStorage.getItem("github_token") || "";
   const jd = state?.jd || localStorage.getItem("job_description") || "";
+  const provider = state?.provider || localStorage.getItem("ai_recruiter_provider") || "openai";
+  const model = state?.model || localStorage.getItem("ai_recruiter_model") || "gpt-4o-mini";
+  const apiKey = state?.apiKey || localStorage.getItem("ai_recruiter_api_key") || "";
+  const baseUrl = state?.baseUrl || "";
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -32,11 +36,6 @@ export default function Dashboard() {
   useEffect(() => {
     if (!sessionId) return;
 
-    localStorage.removeItem("session_id");
-    localStorage.removeItem("github_username");
-    localStorage.removeItem("github_token");
-    localStorage.removeItem("job_description");
-
     const fetchMatch = async () => {
       try {
         setStatus("Analyzing resume against job description...");
@@ -49,6 +48,10 @@ export default function Dashboard() {
             job_description: jd,
             github_username: github || null,
             github_token: githubToken || null,
+            provider,
+            model,
+            api_key: apiKey,
+            base_url: baseUrl,
           }),
         });
 
@@ -60,6 +63,10 @@ export default function Dashboard() {
         const result = await res.json();
         setData(result);
         setStatus("Analysis complete");
+        localStorage.removeItem("session_id");
+        localStorage.removeItem("github_username");
+        localStorage.removeItem("github_token");
+        localStorage.removeItem("job_description");
       } catch (err) {
         console.error(err);
         setError(err.message || "Failed to analyze. Check backend connection.");
@@ -247,7 +254,7 @@ export default function Dashboard() {
 
             {/* Chat */}
             <div className="animate-fade-in" style={{ animationDelay: "0.6s" }}>
-              <ChatSection sessionId={sessionId} disabled={false} />
+              <ChatSection sessionId={sessionId} disabled={false} provider={provider} model={model} apiKey={apiKey} baseUrl={baseUrl} />
             </div>
           </>
         )}

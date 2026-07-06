@@ -8,6 +8,7 @@ from services.vector_store import vector_store
 from services.session_store import session_store
 from services.llm_service import llm_service
 from services.embedding_service import embedder
+from services.provider_config import PROVIDER_CONFIGS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -16,6 +17,18 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    provider: str = "openai"
+    model: str = "gpt-4o-mini"
+    api_key: str = ""
+    base_url: str = ""
+
+
+def _llm_config(provider, model, api_key, base_url=""):
+    if base_url:
+        return api_key, base_url, model
+    provider_cfg = PROVIDER_CONFIGS.get(provider)
+    resolved = provider_cfg["base_url"] if provider_cfg else PROVIDER_CONFIGS["openai"]["base_url"]
+    return api_key, resolved, model
 
 
 @router.post("/chat/stream")
@@ -40,7 +53,9 @@ async def chat_stream(request: ChatRequest):
 
     context = "\n\n".join(rag_docs) if rag_docs else all_text
 
-    def generator():
+    api_key, base_url, model = _llm_config(request.provider, request.model, request.api_key, request.base_url)
+
+    async def generator():
         try:
             yield f"data: {json.dumps({'type': 'status', 'message': 'Thinking...'})}\n\n"
 
@@ -65,7 +80,7 @@ async def chat_stream(request: ChatRequest):
             session_store.add_message(request.session_id, "user", request.message)
 
             full_content = ""
-            for token in llm_service._stream_chat(messages):
+            async for token in llm_service._stream_chat(messages, api_key, base_url, model):
                 full_content += token
                 yield f"data: {json.dumps({'type': 'text', 'content': token})}\n\n"
 

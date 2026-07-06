@@ -1,14 +1,13 @@
-from sentence_transformers import SentenceTransformer
 import logging
+
+from services.model_registry import ModelRegistry, DOC_EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
 
 class EmbedderService:
     def __init__(self):
         logger.info("Loading document embedding model...")
-        self.model = SentenceTransformer(
-            "sentence-transformers/all-MiniLM-L6-v2"
-        )
+        self.model = ModelRegistry.get(DOC_EMBEDDING_MODEL)
         self.embedding_cache = {}
 
     def embed_documents(self, documents):

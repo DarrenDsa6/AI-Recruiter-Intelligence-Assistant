@@ -1,6 +1,6 @@
 # AI Recruiter Intelligence Assistant
 
-An end-to-end AI-powered candidate screening platform. Upload a resume, paste a job description, and get a structured match analysis with scores, skill gaps, GitHub insights, interview questions, and a persistent streaming chat over the resume context.
+An end-to-end AI-powered candidate screening platform. Upload a resume, paste a job description, and get a structured match analysis with scores, skill gaps, GitHub insights, interview questions, and a streaming chat over the resume context.
 
 ---
 
@@ -22,10 +22,10 @@ An end-to-end AI-powered candidate screening platform. Upload a resume, paste a 
 |-------|-----------|
 | **Frontend** | React 19, React Router 7, Tailwind CSS 3, Framer Motion |
 | **Backend** | FastAPI, Python 3.11, Uvicorn |
-| **LLM** | Mistral Large 3 (675B) via NVIDIA API |
-| **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 |
-| **Semantic Matching** | BAAI/bge-small-en-v1.5 |
-| **Vector DB** | ChromaDB (persistent) |
+| **LLM** | Configurable (OpenAI, NVIDIA, Together, Groq, DeepSeek) |
+| **Embeddings / Semantic Matching** | sentence-transformers/all-MiniLM-L6-v2 (single model) |
+| **Vector DB** | ChromaDB (in-memory) |
+| **LLM Calls** | Async via AsyncOpenAI (non-blocking, parallel) |
 | **PDF Export** | html2canvas-pro + jsPDF |
 | **Markdown Rendering** | react-markdown + remark-gfm |
 | **File Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
@@ -64,7 +64,7 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 │   │   ├── weighted_skill_gap_analyzer.py  # Scoring engine
 │   │   ├── jd_skill_classifier.py  # Required vs optional
 │   │   ├── matcher.py           # Orchestrator
-│   │   ├── llm_service.py       # Mistral via NVIDIA API
+│   │   ├── llm_service.py       # Async LLM client
 │   │   └── github_service.py    # GitHub API client
 │   ├── data/                    # skills.json, skill_aliases.json
 │   ├── services/.env            # LLM_API_KEY

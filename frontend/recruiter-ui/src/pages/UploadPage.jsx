@@ -1,7 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 
 const API = process.env.REACT_APP_API_URL || "http://localhost:8000/api";
+const PROVIDER_KEY = "ai_recruiter_provider";
+const MODEL_KEY = "ai_recruiter_model";
+const API_KEY_KEY = "ai_recruiter_api_key";
+const CUSTOM_URL_KEY = "ai_recruiter_custom_url";
+
+const DEFAULT_PROVIDER = "openai";
+const DEFAULT_MODEL = "gpt-4o-mini";
 
 export default function UploadPage() {
   const [file, setFile] = useState(null);
@@ -10,13 +17,57 @@ export default function UploadPage() {
   const [jd, setJd] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  const [providers, setProviders] = useState({});
+  const [provider, setProvider] = useState(localStorage.getItem(PROVIDER_KEY) || DEFAULT_PROVIDER);
+  const [model, setModel] = useState(localStorage.getItem(MODEL_KEY) || DEFAULT_MODEL);
+  const [apiKey, setApiKey] = useState(localStorage.getItem(API_KEY_KEY) || "");
+  const [customBaseUrl, setCustomBaseUrl] = useState(localStorage.getItem(CUSTOM_URL_KEY) || "");
+  const [showTokenInfo, setShowTokenInfo] = useState(false);
+
   const navigate = useNavigate();
+
+  useEffect(() => {
+    fetch(`${API}/models`)
+      .then((r) => r.json())
+      .then(setProviders)
+      .catch(() => {});
+  }, []);
+
+  const currentProvider = providers[provider];
+  const models = currentProvider?.models || [];
+
+  const handleProviderChange = (newProvider) => {
+    setProvider(newProvider);
+    const cfg = providers[newProvider];
+    if (newProvider === "custom") {
+      setModel(localStorage.getItem(MODEL_KEY) || "");
+    } else {
+      const newModel = cfg?.default_model || cfg?.models?.[0] || "";
+      setModel(newModel);
+    }
+  };
+
+  const resolveBaseUrl = () => {
+    if (provider === "custom") return customBaseUrl;
+    return providers[provider]?.base_url || "";
+  };
 
   const handleUpload = async () => {
     if (!file) { setError("Please select a resume file"); return; }
     if (!jd.trim()) { setError("Please paste a job description"); return; }
+    if (!apiKey.trim()) { setError("Please enter your API key"); return; }
+    if (provider === "custom" && !customBaseUrl.trim()) { setError("Please enter your custom base URL"); return; }
+    if (provider === "custom" && !model.trim()) { setError("Please enter the model name"); return; }
     setError("");
     setLoading(true);
+
+    localStorage.setItem(PROVIDER_KEY, provider);
+    localStorage.setItem(MODEL_KEY, model);
+    localStorage.setItem(API_KEY_KEY, apiKey);
+    if (provider === "custom") localStorage.setItem(CUSTOM_URL_KEY, customBaseUrl);
+
+    const baseUrl = resolveBaseUrl();
 
     try {
       const formData = new FormData();
@@ -35,7 +86,18 @@ export default function UploadPage() {
       if (githubToken) localStorage.setItem("github_token", githubToken);
       localStorage.setItem("job_description", jd);
 
-      navigate("/dashboard", { state: { sessionId: session_id, github, githubToken, jd } });
+      navigate("/dashboard", {
+        state: {
+          sessionId: session_id,
+          github,
+          githubToken,
+          jd,
+          provider,
+          model,
+          apiKey,
+          baseUrl,
+        },
+      });
     } catch (err) {
       setError(err.message || "Upload failed. Is the backend running?");
     } finally {
@@ -43,7 +105,7 @@ export default function UploadPage() {
     }
   };
 
-  const isValid = file && jd.trim();
+  const isValid = file && jd.trim() && apiKey.trim();
 
   return (
     <div className="min-h-screen bg-[#0B0F19] flex items-center justify-center p-4">
@@ -95,6 +157,71 @@ export default function UploadPage() {
             />
           </div>
 
+          {/* LLM Provider & API Key */}
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-gray-400 mb-1.5 block">
+                1. Choose Provider
+              </label>
+              <select
+                value={provider}
+                onChange={(e) => handleProviderChange(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/10 focus:outline-none focus:border-blue-500/50 text-sm transition text-white"
+              >
+                {Object.entries(providers).map(([key, cfg]) => (
+                  <option key={key} value={key} className="bg-[#1a1f2e]">{cfg.name}</option>
+                ))}
+              </select>
+            </div>
+            {provider === "custom" ? (
+              <div>
+                <label className="text-xs font-medium text-gray-400 mb-1.5 block">
+                  2. Base URL
+                </label>
+                <input
+                  type="text"
+                  placeholder="https://your-proxy.example.com/v1"
+                  value={customBaseUrl}
+                  onChange={(e) => setCustomBaseUrl(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/10 focus:outline-none focus:border-blue-500/50 text-sm transition"
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="text-xs font-medium text-gray-400 mb-1.5 block">
+                  2. Choose Model
+                </label>
+                <select
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/10 focus:outline-none focus:border-blue-500/50 text-sm transition text-white"
+                >
+                  {models.map((m) => (
+                    <option key={m} value={m} className="bg-[#1a1f2e]">{m}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div>
+              <label className="text-xs font-medium text-gray-400 mb-1.5 block">
+                3. API Key
+              </label>
+              <input
+                type="password"
+                placeholder={
+                  provider === "openai" ? "sk-..." :
+                  provider === "nvidia" ? "nvapi-..." :
+                  provider === "groq" ? "gsk_..." :
+                  provider === "together" ? "tgpv_..." :
+                  "Your API key"
+                }
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/10 focus:outline-none focus:border-blue-500/50 text-sm transition"
+              />
+            </div>
+          </div>
+
           {/* GitHub */}
           <div className="space-y-3">
             <div>
@@ -114,12 +241,41 @@ export default function UploadPage() {
               </div>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-400 mb-1.5 block">
-                GitHub Token <span className="text-gray-600 font-normal">(optional, for higher API rate limits)</span>
-              </label>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <label className="text-xs font-medium text-gray-400">
+                  GitHub Token <span className="text-gray-600 font-normal">(optional)</span>
+                </label>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowTokenInfo(!showTokenInfo)}
+                    className="text-gray-600 hover:text-gray-400 transition"
+                    title="How to get a GitHub token"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z" />
+                    </svg>
+                  </button>
+                  {showTokenInfo && (
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-3 bg-[#1a1f2e] border border-white/10 rounded-xl shadow-2xl z-10 text-xs text-gray-300 leading-relaxed">
+                      <div className="font-medium text-gray-200 mb-1">Creating a GitHub Token:</div>
+                      <ol className="list-decimal list-inside space-y-0.5">
+                        <li>Go to github.com/settings/tokens</li>
+                        <li>Click "Generate new token (classic)"</li>
+                        <li>Check <strong>repo</strong> scope</li>
+                        <li>Generate and copy the token</li>
+                      </ol>
+                      <div className="mt-1.5 text-gray-500">Without a token, unauthenticated requests are limited to 60/hr.</div>
+                      <div
+                        className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 rotate-45 w-2 h-2 bg-[#1a1f2e] border-r border-b border-white/10"
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
               <input
                 type="password"
-                placeholder="github_pat_xxxxxxxxxxxx"
+                placeholder="ghp_... or github_pat_..."
                 value={githubToken}
                 onChange={(e) => setGithubToken(e.target.value)}
                 className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/10 focus:outline-none focus:border-blue-500/50 text-sm transition"
@@ -165,7 +321,7 @@ export default function UploadPage() {
 
         {/* Footer */}
         <p className="text-[10px] text-gray-700 text-center">
-          Powered by AI · Your data is erased when you end the session
+          Your API key stays in your browser and is never stored on the server
         </p>
       </div>
     </div>

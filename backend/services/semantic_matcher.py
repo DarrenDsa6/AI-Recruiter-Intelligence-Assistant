@@ -1,15 +1,12 @@
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+from services.model_registry import ModelRegistry, SEMANTIC_MATCH_MODEL
 from services.skill_embedding_cache import SkillEmbeddingCache
 
 class SemanticMatcher:
     def __init__(self):
         print("Initializing Semantic Matcher...")
-        # Load embedding model
-        self.model = SentenceTransformer(
-            "BAAI/bge-small-en-v1.5"
-        )
-        # Load cached embeddings
+        self.model = ModelRegistry.get(SEMANTIC_MATCH_MODEL)
         self.cache = SkillEmbeddingCache()
         print(
             f"Loaded {len(self.cache.embeddings)} cached skill embeddings."
@@ -41,11 +38,7 @@ class SemanticMatcher:
             print(
                 f"Embedding {len(missing_skills)} uncached skills..."
             )
-            texts = [
-                "Represent this sentence for similarity: "
-                + skill
-                for skill in missing_skills
-            ]
+            texts = missing_skills
             new_vectors = self.model.encode(
                 texts,
                 normalize_embeddings=True
@@ -67,7 +60,7 @@ class SemanticMatcher:
         self,
         resume_skills,
         jd_skills,
-        threshold=0.90   # Increased threshold
+        threshold=0.80
     ):
         if not resume_skills or not jd_skills:
             return []

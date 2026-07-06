@@ -52,7 +52,7 @@ Load resume chunks + embeddings from ChromaDB (by session_id)
   JD Skill Classification               generate_candidate_report()
     (required vs optional)              generate_interview_questions()
   Semantic Skill Matching
-    (bge-small-en-v1.5, threshold 0.9)       │
+    (all-MiniLM-L6-v2, threshold 0.8)        │
   Weighted Score Calculation                  │
     (70% skills + 30% doc similarity)         │
         │                                     │
@@ -123,10 +123,10 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 |-------|-----------|
 | **Frontend** | React 19, React Router 7, Tailwind CSS 3, Framer Motion |
 | **Backend** | FastAPI, Python 3.11, Uvicorn |
-| **LLM** | Mistral Large 3 (675B) via NVIDIA API |
-| **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 |
-| **Semantic Matching** | BAAI/bge-small-en-v1.5 |
-| **Vector DB** | ChromaDB (persistent) |
+| **LLM** | Configurable (OpenAI, NVIDIA, Together, Groq, DeepSeek) |
+| **Embeddings / Semantic Matching** | sentence-transformers/all-MiniLM-L6-v2 (single model) |
+| **Vector DB** | ChromaDB (in-memory) |
+| **LLM Calls** | Async via AsyncOpenAI (non-blocking, parallel) |
 | **PDF Export** | html2canvas-pro + jsPDF |
 | **Markdown Rendering** | react-markdown + remark-gfm |
 | **File Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
@@ -220,4 +220,4 @@ Open [http://localhost:3000](http://localhost:3000) to use the application.
 
 ---
 
-*Built with FastAPI, React, ChromaDB, and NVIDIA LLMs.*
+*Built with FastAPI, React, ChromaDB, and async LLM inference.*

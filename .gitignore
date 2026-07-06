@@ -258,4 +258,6 @@ Thumbs.db
 # Logs
 *.log
 
+# Sensitive env files
 backend/services/.env
+frontend/recruiter-ui/.env

@@ -1,8 +1,5 @@
-from openai import OpenAI
-import os
-from dotenv import load_dotenv
+from openai import AsyncOpenAI
 import json
-import re
 import logging
 
 logger = logging.getLogger(__name__)
@@ -10,15 +7,10 @@ logger = logging.getLogger(__name__)
 
 class LLMRecruiterService:
 
-    def __init__(self):
-        load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
-        self.client = OpenAI(
-            base_url="https://integrate.api.nvidia.com/v1",
-            api_key=os.getenv("LLM_API_KEY") or os.getenv("MINIMAX_API_KEY")
-        )
-        self.model = "mistralai/mistral-large-3-675b-instruct-2512"
+    def _client(self, api_key, base_url):
+        return AsyncOpenAI(api_key=api_key, base_url=base_url)
 
-    def analyze_github_repos(self, github_data):
+    async def analyze_github_repos(self, github_data, api_key, base_url, model):
         prompt = f"""
             Analyze GitHub projects. Dont speak negatives on abandoned projects, just focus on the good ones.
             Just point out basic neagatives and nothing major. It should seem like even with negatives the candidate is still a good.
@@ -40,9 +32,9 @@ class LLMRecruiterService:
             }}
             """
 
-        return self._call(prompt)
+        return await self._call(prompt, api_key, base_url, model)
 
-    def generate_candidate_report(self, resume, jd, match_result, github_context):
+    async def generate_candidate_report(self, resume, jd, match_result, github_context, api_key, base_url, model):
         prompt = f"""
             You are a recruiter.
 
@@ -68,9 +60,9 @@ class LLMRecruiterService:
             }}
             """
 
-        return self._call(prompt)
+        return await self._call(prompt, api_key, base_url, model)
 
-    def generate_interview_questions(self, resume, jd, missing_skills, github_context):
+    async def generate_interview_questions(self, resume, jd, missing_skills, github_context, api_key, base_url, model):
         prompt = f"""
             Generate interview questions.
 
@@ -94,11 +86,12 @@ class LLMRecruiterService:
             }}
             """
 
-        return self._call(prompt)
+        return await self._call(prompt, api_key, base_url, model)
 
-    def _call(self, prompt):
-        response = self.client.chat.completions.create(
-            model=self.model,
+    async def _call(self, prompt, api_key, base_url, model):
+        client = self._client(api_key, base_url)
+        response = await client.chat.completions.create(
+            model=model,
             messages=[
                 {"role": "system", "content": "You are a strict recruiter AI."},
                 {"role": "user", "content": prompt}
@@ -115,20 +108,25 @@ class LLMRecruiterService:
         )
 
         try:
-            return json.loads(cleaned)
-        except Exception:
+            first_brace = cleaned.index("{")
+            last_brace = cleaned.rindex("}")
+            json_str = cleaned[first_brace:last_brace + 1]
+            return json.loads(json_str)
+        except (ValueError, json.JSONDecodeError) as e:
+            logger.error(f"JSON parse failed: {e}, raw: {text[:200]}")
             return {
                 "raw": text,
                 "cleaned": cleaned,
-                "error": "JSON parse failed"
+                "error": f"JSON parse failed: {e}"
             }
 
-    def _stream(self, prompt):
+    async def _stream(self, prompt, api_key, base_url, model):
+        client = self._client(api_key, base_url)
         try:
             yield f"data: {json.dumps({'type': 'status', 'message': 'Analyzing candidate...'})}\n\n"
 
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = await client.chat.completions.create(
+                model=model,
                 messages=[
                     {"role": "system", "content": "You are a strict recruiter AI."},
                     {"role": "user", "content": prompt}
@@ -137,7 +135,7 @@ class LLMRecruiterService:
                 stream=True
             )
 
-            for chunk in response:
+            async for chunk in response:
                 if not chunk.choices:
                     continue
 
@@ -152,16 +150,17 @@ class LLMRecruiterService:
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
-    def _stream_chat(self, messages):
+    async def _stream_chat(self, messages, api_key, base_url, model):
+        client = self._client(api_key, base_url)
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = await client.chat.completions.create(
+                model=model,
                 messages=messages,
                 temperature=0.2,
                 stream=True
             )
 
-            for chunk in response:
+            async for chunk in response:
                 if not chunk.choices:
                     continue
 

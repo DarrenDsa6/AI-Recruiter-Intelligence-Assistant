@@ -3,11 +3,7 @@ import uuid
 
 class VectorStoreService:
     def __init__(self):
-        self.client = chromadb.Client(
-            settings=chromadb.Settings(
-                persist_directory="chroma_db"
-            )
-        )
+        self.client = chromadb.Client()
         self.collection = self.client.get_or_create_collection(
             name="ai_recruiter_collection"
         )

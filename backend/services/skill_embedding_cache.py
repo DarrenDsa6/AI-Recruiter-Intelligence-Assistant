@@ -1,14 +1,12 @@
 import pickle
 import os
 
-from sentence_transformers import SentenceTransformer
+from services.model_registry import ModelRegistry, SEMANTIC_MATCH_MODEL
 
 class SkillEmbeddingCache:
     def __init__(self):
         print("Loading embedding model for cache...")
-        self.model = SentenceTransformer(
-            "BAAI/bge-small-en-v1.5"
-        )
+        self.model = ModelRegistry.get(SEMANTIC_MATCH_MODEL)
         self.cache_path = "data/skill_embeddings.pkl"
         self.embeddings = {}
         self.load_cache()
@@ -42,11 +40,7 @@ class SkillEmbeddingCache:
         print(
             f"Embedding {len(new_skills)} new skills..."
         )
-        texts = [
-            "Represent this sentence for similarity: "
-            + skill
-            for skill in new_skills
-        ]
+        texts = new_skills
         vectors = self.model.encode(
             texts,
             normalize_embeddings=True

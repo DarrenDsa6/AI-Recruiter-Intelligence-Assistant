@@ -42,7 +42,7 @@ function StreamingMessage({ content }) {
   );
 }
 
-export default function ChatSection({ sessionId, disabled }) {
+export default function ChatSection({ sessionId, disabled, provider, model, apiKey, baseUrl }) {
   const [messages, setMessages] = useState([]);
   const [currentAI, setCurrentAI] = useState("");
   const [input, setInput] = useState("");
@@ -64,7 +64,7 @@ export default function ChatSection({ sessionId, disabled }) {
       const res = await fetch(`${API}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, message }),
+        body: JSON.stringify({ session_id: sessionId, message, provider, model, api_key: apiKey, base_url: baseUrl }),
       });
 
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
