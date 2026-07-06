@@ -106,7 +106,7 @@ export default function Dashboard() {
     fetchMatch();
 
     return () => { cancelled = true; };
-  }, [sessionId, jd, github, githubToken, navigate]);
+  }, [sessionId, jd, github, githubToken, provider, model, apiKey, baseUrl, navigate]);
 
   const handleEndSession = useCallback(async () => {
     try {

@@ -43,8 +43,7 @@ async def cleanup_sessions():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Pre-warming embedding model...")
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, ModelRegistry.get, DOC_EMBEDDING_MODEL)
+    await asyncio.to_thread(ModelRegistry.get, DOC_EMBEDDING_MODEL)
     logger.info("Embedding model loaded")
 
     logger.info("Starting cleanup worker...")

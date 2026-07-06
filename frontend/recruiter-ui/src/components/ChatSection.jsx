@@ -110,7 +110,7 @@ export default function ChatSection({ sessionId, disabled, provider, model, apiK
       console.error(err);
     }
     setLoading(false);
-  }, [sessionId]);
+  }, [sessionId, provider, model, apiKey, baseUrl]);
 
   const handleSend = () => {
     const text = input.trim();
