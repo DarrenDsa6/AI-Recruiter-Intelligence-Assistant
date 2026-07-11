@@ -2,6 +2,7 @@ import os
 import logging
 from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +18,14 @@ async def init_db():
     engine = create_async_engine(db_url, echo=False, pool_size=5, max_overflow=10)
     async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         import models.user  # noqa: F401
         import models.resume  # noqa: F401
+        import models.chunk  # noqa: F401
         import models.report  # noqa: F401
         from models.user import Base
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database initialized")
+    logger.info("Database initialized (pgvector enabled)")
 
 
 async def close_db():

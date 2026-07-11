@@ -24,8 +24,8 @@ class MatcherService:
         self.embedding_service = embedder
         self.explainer = MatchExplainer()
 
-    def compute_similarity(self, job_description, resume_id):
-        stored_data = self.vector_store.get_by_resume(resume_id)
+    async def compute_similarity(self, db, job_description, resume_id):
+        stored_data = await self.vector_store.get_by_resume(db, resume_id)
 
         vecs = stored_data.get("embeddings")
         documents = stored_data.get("documents", [])
@@ -77,7 +77,6 @@ class MatcherService:
             match_score=final_percent,
         )
 
-        # Identify lowest-scoring chunks for actionable rewrites
         chunk_scores = self._score_chunks(documents, job_description)
 
         return {

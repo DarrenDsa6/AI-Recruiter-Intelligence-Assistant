@@ -1,95 +1,93 @@
-import chromadb
-import uuid
-import os
+import logging
+from uuid import UUID
+
+from sqlalchemy import select, func, delete, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from models.chunk import ResumeChunk
+from services.db import async_session_factory
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStoreService:
-    def __init__(self):
-        persist_dir = os.environ.get("CHROMA_PERSIST_DIR", "./chroma_db")
-        self.client = chromadb.PersistentClient(
-            path=persist_dir,
-            settings=chromadb.Settings(anonymized_telemetry=False),
-        )
-        self.collection = self.client.get_or_create_collection(
-            name="candidate_resumes"
-        )
 
-    def add_documents(self, documents, embeddings, metadatas=None, resume_id=None):
+    async def add_documents(self, db: AsyncSession, documents, embeddings, metadatas=None, resume_id=None):
         if not documents:
             raise ValueError("No documents provided")
         if not embeddings:
             raise ValueError("Embeddings are empty")
         if len(documents) != len(embeddings):
             raise ValueError("Mismatch: documents vs embeddings")
-        if metadatas and len(documents) != len(metadatas):
-            raise ValueError("Mismatch: documents vs metadatas")
-        if not resume_id:
-            resume_id = str(uuid.uuid4())
 
-        ids = [str(uuid.uuid4()) for _ in documents]
-        final_metadatas = []
+        chunks = []
         for i in range(len(documents)):
-            meta = {"resume_id": resume_id, "chunk_index": i}
-            if metadatas:
-                meta.update(metadatas[i])
-            final_metadatas.append(meta)
+            skills = None
+            if metadatas and i < len(metadatas) and "skills" in metadatas[i]:
+                skills = metadatas[i]["skills"]
+            chunk = ResumeChunk(
+                resume_id=UUID(resume_id) if isinstance(resume_id, str) else resume_id,
+                chunk_index=i,
+                text=documents[i],
+                embedding=embeddings[i],
+                skills=skills,
+            )
+            chunks.append(chunk)
 
-        self.collection.add(
-            documents=documents,
-            embeddings=embeddings,
-            ids=ids,
-            metadatas=final_metadatas
-        )
+        db.add_all(chunks)
+        await db.flush()
         return resume_id
 
-    def get_resume_text(self, resume_id):
-        results = self.collection.get(where={"resume_id": resume_id})
-        docs = results.get("documents", [])
-        return " ".join(docs) if docs else ""
-
-    def delete_by_resume(self, resume_id):
-        results = self.collection.get(where={"resume_id": resume_id})
-        ids = results.get("ids", [])
-        if not ids:
-            return 0
-        self.collection.delete(ids=ids)
-        return len(ids)
-
-    def get_by_resume(self, resume_id):
-        return self.collection.get(
-            where={"resume_id": resume_id},
-            include=["documents", "embeddings", "metadatas"]
+    async def get_by_resume(self, db: AsyncSession, resume_id):
+        result = await db.execute(
+            select(ResumeChunk)
+            .where(ResumeChunk.resume_id == UUID(resume_id) if isinstance(resume_id, str) else ResumeChunk.resume_id == resume_id)
+            .order_by(ResumeChunk.chunk_index)
         )
+        chunks = result.scalars().all()
+        if not chunks:
+            return {"documents": [], "embeddings": [], "metadatas": []}
 
-    def query_by_resume(self, resume_id, query_embedding, top_k=5):
-        return self.collection.query(
-            query_embeddings=[query_embedding],
-            where={"resume_id": resume_id},
-            n_results=top_k,
-            include=["documents", "distances", "metadatas"]
+        documents = [c.text for c in chunks]
+        embeddings = [list(c.embedding) for c in chunks]
+        metadatas = [{"skills": c.skills or "", "chunk_index": c.chunk_index} for c in chunks]
+
+        return {"documents": documents, "embeddings": embeddings, "metadatas": metadatas}
+
+    async def query_by_resume(self, db: AsyncSession, resume_id, query_embedding, top_k=5):
+        rid = UUID(resume_id) if isinstance(resume_id, str) else resume_id
+        result = await db.execute(
+            select(ResumeChunk)
+            .where(ResumeChunk.resume_id == rid)
+            .order_by(ResumeChunk.embedding.cosine_distance(query_embedding))
+            .limit(top_k)
         )
+        chunks = result.scalars().all()
+        if not chunks:
+            return {"documents": [], "distances": [], "metadatas": []}
 
-    def delete_all(self):
-        self.client.delete_collection("candidate_resumes")
-        self.collection = self.client.get_or_create_collection(
-            name="candidate_resumes"
+        documents = [[c.text for c in chunks]]
+        distances = [[0.0 for _ in chunks]]  # pgvector doesn't return distances by default
+        metadatas = [[{"skills": c.skills or "", "chunk_index": c.chunk_index} for c in chunks]]
+
+        return {"documents": documents, "distances": distances, "metadatas": metadatas}
+
+    async def get_resume_text(self, db: AsyncSession, resume_id):
+        rid = UUID(resume_id) if isinstance(resume_id, str) else resume_id
+        result = await db.execute(
+            select(ResumeChunk.text)
+            .where(ResumeChunk.resume_id == rid)
+            .order_by(ResumeChunk.chunk_index)
         )
+        texts = [row[0] for row in result.all()]
+        return " ".join(texts) if texts else ""
 
-    # Backward-compatible aliases (deprecated, will be removed in Phase 3)
-    def add_documents_legacy(self, documents, embeddings, metadatas=None, session_id=None):
-        return self.add_documents(documents, embeddings, metadatas, resume_id=session_id)
-
-    def get_by_session(self, session_id):
-        return self.get_by_resume(session_id)
-
-    def query_by_session(self, session_id, query_embedding, top_k=5):
-        return self.query_by_resume(session_id, query_embedding, top_k)
-
-    def delete_by_session(self, session_id):
-        return self.delete_by_resume(session_id)
-
-    def get_session_text(self, session_id):
-        return self.get_resume_text(session_id)
+    async def delete_by_resume(self, db: AsyncSession, resume_id):
+        rid = UUID(resume_id) if isinstance(resume_id, str) else resume_id
+        result = await db.execute(
+            delete(ResumeChunk).where(ResumeChunk.resume_id == rid)
+        )
+        return result.rowcount
 
 
 vector_store = VectorStoreService()

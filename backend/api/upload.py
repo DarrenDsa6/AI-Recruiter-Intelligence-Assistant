@@ -46,7 +46,6 @@ async def upload_document(
         content = await file.read()
         file_hash = _hash_file(content)
 
-        # Check if user already uploaded this exact file
         result = await db.execute(
             select(MasterResume).where(
                 MasterResume.user_id == user_id,
@@ -62,7 +61,6 @@ async def upload_document(
                 message="Resume already uploaded.",
             )
 
-        # Parse new resume
         text = parser.parse_file(file_bytes=content, filename=file.filename)
         resume_skills = skill_extractor.extract_skills(text)
         chunks = chunker.chunk_text(text)
@@ -74,20 +72,19 @@ async def upload_document(
         if not embeddings:
             return ErrorResponse(error="Embedding failed")
 
-        # Create DB record first to get resume_id
         resume = MasterResume(
             user_id=user_id,
             file_hash=file_hash,
             raw_text=text,
-            chroma_resume_id="",  # placeholder, set after vector store
+            chroma_resume_id="",
             filename=file.filename,
         )
         db.add(resume)
         await db.commit()
         await db.refresh(resume)
 
-        # Store vectors keyed by resume_id
-        vector_store.add_documents(
+        await vector_store.add_documents(
+            db=db,
             documents=chunks,
             embeddings=embeddings,
             metadatas=[
@@ -96,8 +93,8 @@ async def upload_document(
             ],
             resume_id=str(resume.id),
         )
+        await db.commit()
 
-        # Update chroma_resume_id
         resume.chroma_resume_id = str(resume.id)
         await db.commit()
 

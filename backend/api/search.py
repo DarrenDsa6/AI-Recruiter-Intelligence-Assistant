@@ -1,17 +1,19 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
 from services.vector_store import vector_store
 from services.embedding_service import embedder
+from services.db import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.get("/search/{session_id}")
-async def search_documents(session_id: str, query: str, top_k: int = 5):
+async def search_documents(session_id: str, query: str, top_k: int = 5, db: AsyncSession = Depends(get_db)):
     try:
-        stored_data = vector_store.get_by_session(session_id)
+        stored_data = await vector_store.get_by_resume(db, session_id)
         if not stored_data or not stored_data.get("documents"):
             return {"error": "Session not found"}
 

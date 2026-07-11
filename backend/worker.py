@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select, update
 
-# Add backend to path for imports
 sys.path.insert(0, os.path.dirname(__file__))
 
 from services.db import init_db, close_db, async_session_factory
 from services.redis_client import get_redis, close_redis
 from services.matcher import matcher
 from services.llm_service import llm_service
+from services.vector_store import vector_store
 from models.report import TailoringReport
 
 logging.basicConfig(
@@ -78,7 +78,6 @@ async def process_job(payload: dict, db):
 
     logger.info(f"Processing job: report={report_id}")
 
-    # Update status -> processing
     await db.execute(
         update(TailoringReport)
         .where(TailoringReport.id == report_id)
@@ -87,41 +86,24 @@ async def process_job(payload: dict, db):
     await db.commit()
 
     try:
-        # 1. Compute similarity (CPU-bound, fast)
-        match_result = matcher.compute_similarity(
-            job_description=jd_text,
-            resume_id=resume_id,
-        )
+        match_result = await matcher.compute_similarity(db, jd_text, resume_id)
         logger.info(f"Match score: {match_result.get('final_score')}%")
 
-        # 2. LLM calls with shared key
-        api_key = os.environ.get("LLM_API_KEY", "")
-        base_url = "https://api.openai.com/v1"
-        model = "gpt-4o-mini"
+        resume_text = await vector_store.get_resume_text(db, resume_id)
 
-        # Get resume text for LLM context
-        stored_data = matcher.vector_store.get_by_resume(resume_id)
-        resume_text = " ".join(stored_data.get("documents", []))
-
-        # Generate report (career coach framing)
         report = await llm_service.generate_candidate_report(
-            resume_text, jd_text, match_result, {}, api_key, base_url, model
+            resume_text, jd_text, match_result, {}
         )
 
-        # Generate interview questions (mock interview prep)
         questions = await llm_service.generate_interview_questions(
             resume_text, jd_text, match_result["missing_required"], {},
-            api_key, base_url, model,
         )
 
-        # Generate actionable rewrites (new method)
         rewrites = await llm_service.generate_actionable_rewrites(
             match_result.get("low_scoring_chunks", []),
             jd_text,
-            api_key, base_url, model,
         )
 
-        # 3. Save results to Postgres
         await db.execute(
             update(TailoringReport)
             .where(TailoringReport.id == report_id)
@@ -137,7 +119,6 @@ async def process_job(payload: dict, db):
         await db.commit()
         logger.info(f"Job completed: report={report_id}")
 
-        # 4. Send email with magic link
         from models.user import User
         user_result = await db.execute(select(User.email).where(User.id == user_id))
         email = user_result.scalar_one_or_none()
@@ -164,7 +145,7 @@ async def ensure_consumer_group(redis):
         await redis.xgroup_create(JOB_STREAM, GROUP_NAME, id="0", mkstream=True)
         logger.info(f"Consumer group '{GROUP_NAME}' created")
     except Exception:
-        pass  # Group already exists
+        pass
 
 
 async def main():

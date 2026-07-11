@@ -1,10 +1,12 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
 from services.github_service import GitHubService
 from services.chunker import ChunkerService
 from services.embedding_service import embedder
 from services.vector_store import vector_store
+from services.db import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -14,7 +16,7 @@ chunker = ChunkerService()
 
 
 @router.post("/github/{session_id}/{username}")
-async def ingest_github(session_id: str, username: str, token: str | None = None):
+async def ingest_github(session_id: str, username: str, token: str | None = None, db: AsyncSession = Depends(get_db)):
     try:
         gh_service = GitHubService(token=token) if token else github_service
         repos = gh_service.get_repositories(username)
@@ -47,12 +49,14 @@ async def ingest_github(session_id: str, username: str, token: str | None = None
 
         embeddings = embedder.embed_documents(chunks)
 
-        vector_store.add_documents(
+        await vector_store.add_documents(
+            db=db,
             documents=chunks,
             embeddings=embeddings,
             metadatas=metadatas,
-            session_id=session_id
+            resume_id=session_id,
         )
+        await db.commit()
 
         logger.info(f"GitHub ingest: {len(repos)} repos, {len(chunks)} chunks for {username}")
 

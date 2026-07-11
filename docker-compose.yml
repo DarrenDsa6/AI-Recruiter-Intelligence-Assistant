@@ -5,8 +5,6 @@ services:
     container_name: ai-recruiter-backend
     ports:
       - "8000:8000"
-    volumes:
-      - chroma_data:/app/chroma_db
     env_file:
       - ./backend/.env
     environment:
@@ -18,8 +16,6 @@ services:
       context: ./backend
     container_name: ai-recruiter-worker
     command: python worker.py
-    volumes:
-      - chroma_data:/app/chroma_db
     env_file:
       - ./backend/.env
     environment:
@@ -39,6 +35,3 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
-
-volumes:
-  chroma_data:
