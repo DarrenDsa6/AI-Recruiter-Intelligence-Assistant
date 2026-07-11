@@ -1,125 +1,154 @@
-# AI Recruiter Intelligence Assistant
+# Architecture
 
-> An end-to-end AI-powered candidate screening platform that analyzes resumes against job descriptions using LLMs, semantic search, and structured skill matching.
-
----
-
-## Architecture Overview
-
-![alt text](Gemini_Generated_Image_t1wl4dt1wl4dt1wl.png)
+> AI Resume Tailor -- an asynchronous, candidate-facing platform for resume tailoring with email OTP auth, Redis Streams job queue, and career coach AI.
 
 ---
 
 ## Data Flow
 
-### 1. Resume Ingestion (`POST /api/upload`)
+### 1. Authentication
 
 ```
-User uploads PDF/DOCX
+User enters email
         │
         ▼
-Parser Service ──► extract raw text
+POST /api/auth/request-otp
+        │
+        ├── Generate 6-digit code
+        ├── Store in Redis: otp:{email} (TTL 300s)
+        ├── Rate limit: otp_rate:{email} (3/5min), otp_ip:{ip} (10/hr)
+        └── Send via Resend email
         │
         ▼
-Skill Extraction ──► detect skills via regex + alias map (skills.json)
+User enters code
         │
         ▼
-Chunker Service ──► split into 500-char windows (50-char overlap)
+POST /api/auth/verify-otp
+        │
+        ├── Compare against Redis key
+        ├── Upsert user in PostgreSQL
+        └── Return JWT token
         │
         ▼
-Embedder Service ──► all-MiniLM-L6-v2 → vector embeddings
-        │
-        ▼
-Vector Store ──► ChromaDB (keyed by session_id)
-        │
-        ▼
-Return session_id to frontend
+Frontend stores JWT in localStorage
+All subsequent requests include Authorization: Bearer <jwt>
 ```
 
-### 2. Match Analysis (`POST /api/match`)
+### 2. Resume Upload
 
 ```
-Frontend sends session_id + job_description + github_username + github_token
+User uploads PDF + pastes JD
         │
         ▼
-Load resume chunks + embeddings from ChromaDB (by session_id)
+POST /api/upload (authenticated)
         │
-        ├─────────────────────────────────────┐
-        ▼                                     ▼
-  Deterministic Engine                  LLM Intelligence Layer (async)
-  ─────────────────────                 ───────────────────────────
-  Skill Extraction (JD)                 1. analyze_github_repos()
-  JD Skill Classification               2. generate_candidate_report() ┐
-    (required vs optional)              3. generate_interview_questions() ┘ parallel via asyncio.gather
-  Semantic Skill Matching
-    (all-MiniLM-L6-v2, threshold 0.8)   All LLM calls use AsyncOpenAI
-  Weighted Score Calculation            (non-blocking, event loop
-    (70% skills + 30% doc similarity)    serves other requests during
-        │                                network I/O)
-        │                                     │
-        └──────────────┬──────────────────────┘
-                       ▼
-         Return structured JSON:
-         { match, github, report, questions }
-
-GitHub Token: supplied via frontend input or GITHUB_TOKEN env var.
-GitHubService creates an authenticated requests.Session when a token is present,
-enabling higher API rate limits and access to private repositories.
+        ├── Calculate SHA-256 of file bytes
+        ├── Query PostgreSQL: master_resumes WHERE user_id + file_hash
+        │
+        ├── EXISTS? ──► Return existing resume_id (skip processing)
+        │
+        └── NEW? ─────► Parser → Chunker → Embedder → ChromaDB
+                         │
+                         ├── Insert into master_resumes
+                         └── Return { resume_id, filename, skills }
 ```
 
-### 3. Follow-Up Chat (`POST /api/chat/stream`)
+### 3. Job Submission (Async)
+
+```
+POST /api/match/:upload_id/start (authenticated)
+        │
+        ├── Create tailoring_reports row (status: "pending")
+        ├── Push to Redis Stream "tailoring-jobs":
+        │     { report_id, user_id, resume_id, jd_text }
+        │
+        └── Return 202 Accepted { report_id, status: "pending" }
+
+    ┌─────────────────────────────────────────────────┐
+    │              Redis Stream                        │
+    │   tailoring-jobs ──────► tailoring-workers       │
+    │   (producer: API)      (consumer: worker.py)     │
+    └─────────────────────────────────────────────────┘
+                        │
+                        ▼
+              Worker picks up job
+```
+
+### 4. Background Processing (worker.py)
+
+```
+Worker starts, connects to Redis + PostgreSQL
+        │
+        ▼
+XREADGROUP from "tailoring-jobs" (blocks 5s)
+        │
+        ▼
+process_job(payload):
+        │
+        ├── Update report status → "processing"
+        │
+        ├── Pull resume chunks from ChromaDB (by resume_id)
+        │
+        ├── matcher.compute_similarity(chunks, jd)
+        │     ├── Extract JD skills (regex + classifier)
+        │     ├── Semantic matching (all-MiniLM-L6-v2, threshold 0.8)
+        │     └── Weighted score: (skill × 0.7) + (doc_sim × 0.3)
+        │
+        ├── llm_service.generate_candidate_report(resume, jd, match_result)
+        │     └── Career coach prompt → ATS score, gaps, rewrites
+        │
+        ├── llm_service.generate_interview_questions(resume, jd, match_result)
+        │     └── Gap-focused questions with prep tips
+        │
+        ├── llm_service.generate_actionable_rewrites(chunks, jd, match_result)
+        │     └── Rewritten bullet points for weak sections
+        │
+        ├── Save all results to PostgreSQL (status → "completed")
+        │
+        ├── Send email via Resend with link to dashboard
+        │
+        └── XACK message from Redis Stream
+
+    On failure:
+        ├── Retry with exponential backoff (3 attempts: 1s, 2s, 4s)
+        └── Dead letter stream after all retries exhausted
+```
+
+### 5. Report Retrieval
+
+```
+Dashboard mounts → GET /api/reports
+        │
+        └── List all reports for authenticated user (PostgreSQL)
+
+Dashboard polls → GET /api/reports/:report_id
+        │
+        ├── status == "pending" / "processing" → show spinner, keep polling (3s)
+        ├── status == "failed" → show error
+        └── status == "completed" → render full results:
+              ├── ATS Compatibility Score (circular gauge)
+              ├── Summary
+              ├── Strengths / Gaps / Recommendations
+              ├── Actionable Rewrites (rewritten bullets)
+              ├── Interview Questions (gap-focused)
+              └── Career Coach Chat (RAG over resume chunks)
+```
+
+### 6. Follow-Up Chat
 
 ```
 User types question
         │
         ▼
-Load resume context from ChromaDB
-Load conversation history from session store
+POST /api/chat (authenticated)
         │
-        ▼
-Embed user query (all-MiniLM-L6-v2)
+        ├── Load resume chunks from ChromaDB (by resume_id from report)
+        ├── Load conversation history from Redis session store
+        ├── Embed query (all-MiniLM-L6-v2)
+        ├── Retrieve top-5 relevant chunks (cosine similarity)
+        ├── Build LLM messages: system (RAG context) + history + question
         │
-        ▼
-Retrieve top-5 relevant chunks via ChromaDB vector search (cosine similarity)
-(if no results, falls back to full resume text)
-        │
-        ▼
-Build LLM messages:
-  system (RAG context) + history + user question
-        │
-        ▼
-Stream tokens via SSE (data: {...} format)
-        │
-        ▼
-Save user + assistant messages to session store
-```
-
-The frontend ChatSection features a **full-screen popup mode** - clicking the expand
-icon opens the chat as a centered overlay at 95vw × 90vh with a dark backdrop.
-
-### 4. Model Pre-Warming (Startup)
-
-```
-Server starts
-        │
-        ▼
-lifespan() runs before accepting requests
-        │
-        ├── Pre-warm embedding model (run_in_executor)
-        │     all-MiniLM-L6-v2 → loaded into memory
-        │     First user request is instant, no download delay
-        │
-        ├── Start session cleanup background worker
-        │
-        ▼
-Ready to serve requests
-```
-
-### 5. Session Cleanup
-
-```
-Manual:   DELETE /api/session/end/{id}  →  erase ChromaDB + session store
-Auto:     Background worker every 60s   →  expire sessions older than 1 hour
+        └── Stream response via SSE
 ```
 
 ---
@@ -140,122 +169,56 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 
 | Layer | Technology |
 |-------|-----------|
-| **Frontend** | React 19, React Router 7, Tailwind CSS 3, Framer Motion |
+| **Frontend** | React 19, React Router 7, Tailwind CSS 3 |
 | **Backend** | FastAPI, Python 3.11, Uvicorn |
-| **LLM** | Configurable (OpenAI, NVIDIA, Together, Groq, DeepSeek) |
-| **Embeddings / Semantic Matching** | sentence-transformers/all-MiniLM-L6-v2 (single model) |
-| **Vector DB** | ChromaDB (in-memory) |
-| **LLM Calls** | Async via AsyncOpenAI (non-blocking, parallel) |
+| **Auth** | Email OTP (Redis) + JWT (PyJWT) |
+| **Queue** | Redis Streams (Upstash) |
+| **Database** | PostgreSQL (Supabase/Neon) via SQLAlchemy + asyncpg |
+| **Vector DB** | ChromaDB (persistent, keyed by resume_id) |
+| **LLM** | Shared backend API key via AsyncOpenAI |
+| **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 |
+| **Email** | Resend |
+| **Metrics** | Prometheus (prometheus-fastapi-instrumentator) |
 | **PDF Export** | html2canvas-pro + jsPDF |
-| **Markdown Rendering** | react-markdown + remark-gfm |
-| **File Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
-| **External APIs** | GitHub REST API (optional auth via token) |
-
----
-
-## Project Structure
-
-```
-AI-Recruiter-Intelligence-Assistant/
-├── backend/
-│   ├── main.py                  # FastAPI app entrypoint
-│   ├── api/
-│   │   ├── upload.py            # Resume ingestion
-│   │   ├── match.py             # Structured + streaming match
-│   │   ├── chat.py              # Follow-up chat streaming
-│   │   ├── session.py           # Session management
-│   │   ├── github.py            # GitHub data ingestion
-│   │   ├── search.py            # Semantic search
-│   │   └── models.py            # Pydantic models
-│   ├── services/
-│   │   ├── parser.py            # PDF/DOCX text extraction
-│   │   ├── chunker.py           # Text chunking
-│   │   ├── embedding_service.py # Embedding generation + cache
-│   │   ├── vector_store.py      # ChromaDB operations
-│   │   ├── session_store.py     # In-memory session + chat history
-│   │   ├── skills.py            # Regex-based skill extraction
-│   │   ├── semantic_matcher.py  # Semantic skill matching
-│   │   ├── weighted_skill_gap_analyzer.py  # Scoring engine
-│   │   ├── jd_skill_classifier.py  # Required vs optional
-│   │   ├── matcher.py           # Orchestrator
-│   │   ├── llm_service.py       # LLM API client
-│   │   ├── github_service.py    # GitHub API client
-│   │   ├── explainer.py         # Score explanation
-│   │   ├── skill_embedding_cache.py  # Precomputed embeddings
-│   │   ├── model_registry.py    # Model registry
-│   │   └── provider_config.py   # Provider configuration
-│   └── data/
-│       ├── skills.json           # Skill dictionary
-│       ├── skill_aliases.json    # Normalization map
-│       └── skill_embeddings.pkl  # Precomputed embeddings cache
-│
-├── frontend/recruiter-ui/
-│   ├── src/
-│   │   ├── pages/
-│   │   │   ├── UploadPage.jsx    # Resume + JD input
-│   │   │   └── Dashboard.jsx     # Results + chat
-│   │   ├── components/
-│   │   │   ├── ScoreGauge.jsx    # Circular SVG gauge
-│   │   │   ├── SkillsSection.jsx # Skill tag clouds
-│   │   │   ├── GithubSection.jsx # GitHub insights
-│   │   │   ├── ReportSection.jsx # AI report cards
-│   │   │   ├── QuestionsSection.jsx  # Accordion questions
-│   │   │   ├── ChatSection.jsx   # Markdown chat
-│   │   │   ├── BackendStatus.jsx # Backend health indicator
-│   │   │   └── Loader.jsx        # Loading spinner
-│   │   ├── hooks/
-│   │   │   └── useBackendStatus.js  # Backend status hook
-│   │   ├── services/
-│   │   │   └── api.js            # API client
-│   │   └── utils/
-│   │       └── pdfGenerator.js   # PDF export
-│   ├── Dockerfile
-│   ├── nginx.conf
-│   ├── postcss.config.js
-│   └── tailwind.config.js
-```
+| **Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
 
 ---
 
 ## Key Design Decisions
 
-1. **Two-layer architecture**: Deterministic scoring (skills, embeddings) provides consistent, explainable results, while the LLM layer adds intelligent reasoning, GitHub analysis, and question generation.
+1. **Candidate-facing, not recruiter-facing.** The UX is designed for job seekers optimizing their own resumes. LLM prompts frame feedback as a career coach, not a gatekeeper.
 
-2. **Session isolation**: Each resume upload creates a unique session. All vectors in ChromaDB are tagged with `session_id`, making deletion atomic and complete.
+2. **Async job queue via Redis Streams.** Jobs are submitted instantly (202 Accepted) and processed in a separate worker. This decouples the API from slow LLM calls and allows the worker to scale independently.
 
-3. **Streaming chat**: Follow-up conversations use SSE streaming with persistent context. The full conversation history is stored in-memory per session and injected into every LLM call.
+3. **Resume_id keying with SHA-256 dedup.** ChromaDB embeddings are keyed by resume_id (not session_id). If a user uploads the same PDF again, the existing embeddings are reused -- no re-processing.
 
-4. **Skill normalization**: A curated `skill_aliases.json` maps variations (e.g., "JS" → "JavaScript") for consistent matching. Semantic matching catches synonyms via embeddings.
+4. **Two-layer scoring.** Deterministic skill matching (semantic + regex) provides consistent, explainable results. The LLM layer adds ATS-aware analysis, rewrites, and interview prep on top.
 
-5. **PDF export**: The report can be downloaded as a pixel-perfect A4 PDF capturing all styled components exactly as rendered.
+5. **Redis-backed session store.** Conversation history for chat is stored in Redis with TTL. Survives server restarts, shared between FastAPI and worker, auto-expires.
 
-6. **Error-resilient rendering**: All LLM-driven array data (strengths, weaknesses, signals, recommendations, questions, skills) passes through a `renderItem` helper with a `toList` guard. This handles the LLM's inconsistent output formats - whether it returns strings, objects, or arrays - without crashing or showing raw JSON. Supported object shapes include `{category, details, skills, projects}`, `{signal, evidence}`, `{project, skills, details}`, `{status, next_steps, justification}`, and flat `{name, description, text}` fallbacks.
+6. **Email OTP only (no passwords).** Simpler auth flow, no password storage, no reset flows. Rate limiting on OTP endpoints prevents abuse.
 
-7. **Authenticity score normalization**: The LLM may return `authenticity_score` on either a 0-10 or 0-100 scale. The frontend normalizes values > 10 by dividing by 10 before display.
+7. **Error-resilient rendering.** All LLM-driven data passes through `renderItem` helpers with `toList` guards. Handles inconsistent LLM output formats (strings, objects, arrays) without crashing.
 
-8. **Async LLM calls**: All LLM interactions use `AsyncOpenAI` with `asyncio.gather` for parallel execution. Report generation and interview questions run concurrently, cutting total match time from ~24s to ~16s. The event loop remains free to handle other requests during network I/O.
-
-9. **Model pre-warming**: The embedding model is loaded during `lifespan()` startup before the first request arrives. This prevents a 20-40s cold-start delay on the first user's request. Render free tier services still spin down after 15 min idle, but a free UptimeRobot ping every 10 min keeps the instance alive.
-
-10. **Frontend retry logic**: The Dashboard auto-retries failed match requests up to 2 times with a 10s delay. This handles Render cold starts gracefully - the server wakes up, loads the model, and responds on the retry.
+8. **Model pre-warming.** The embedding model loads during FastAPI lifespan startup, not on first request. Eliminates 20-40s cold-start delay.
 
 ---
 
-## Running Locally
+## Production Features
 
-```bash
-# Backend
-cd backend
-.venv\Scripts\Activate.ps1
-uvicorn main:app --reload --port 8000
-
-# Frontend
-cd frontend/recruiter-ui
-npm start
-```
-
-Open [http://localhost:3000](http://localhost:3000) to use the application.
+- Redis-backed session store (survives restarts, auto-expires)
+- PostgreSQL for persistent user/report data
+- Redis Streams for async job processing with consumer groups
+- Email notifications via Resend (OTP + job completion)
+- JWT authentication with rate limiting
+- SHA-256 resume deduplication
+- Prometheus metrics (request latency, error rates, throughput)
+- Health check endpoint with DB + Redis connectivity checks
+- Graceful shutdown (DB pool, Redis connections)
+- Retry with exponential backoff in worker (3 attempts)
+- Dead letter stream for failed jobs
+- Docker Compose for local development (backend + worker + frontend)
 
 ---
 
-*Built with FastAPI, React, ChromaDB, and async LLM inference.*
+*Built with FastAPI, React, ChromaDB, Redis Streams, and career coach AI.*

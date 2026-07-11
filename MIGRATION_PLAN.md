@@ -547,7 +547,7 @@ one service, so worker may need a separate plan or alternative host.
 | 11   | 6.1   | `AuthPage.jsx` (new)                       | Step 4 | **DONE** |
 | 12   | 6.2   | `UploadPage.jsx`                           | Steps 5, 11 | **DONE** |
 | 13   | 6.3-6.7 | `Dashboard.jsx`, `useBackendStatus.js`, `api.js`, `App.jsx`, components | Steps 6-10 | **DONE** |
-| 14   | 7     | `Dockerfile`, `docker-compose.yml`, `Procfile`, `render.yaml` | All above | |
+| 14   | 7     | `Dockerfile`, `docker-compose.yml`, `Procfile`, `render.yaml` | All above | **DONE** |
 
 ---
 
@@ -583,27 +583,30 @@ one service, so worker may need a separate plan or alternative host.
 
 ## Files Summary
 
-### New Files (7)
+### New Files (8)
 - `backend/services/db.py` -- PostgreSQL connection + models
 - `backend/services/redis_client.py` -- Redis client
 - `backend/api/auth.py` -- OTP endpoints
 - `backend/worker.py` -- Redis Stream consumer worker
+- `backend/models/user.py`, `resume.py`, `report.py` -- SQLAlchemy models
+- `backend/schemas/auth.py`, `upload.py`, `match.py`, `report.py`, `chat.py`, `common.py` -- Pydantic schemas
 - `frontend/recruiter-ui/src/pages/AuthPage.jsx` -- Auth page
 - `MIGRATION_PLAN.md` -- This file
 
 ### Modified Files (16)
 - `backend/requirements.txt` -- Add new dependencies
 - `backend/services/vector_store.py` -- session_id -> resume_id
-- `backend/services/session_store.py` -- Rewrite to Redis-backed
+- `backend/services/session_store.py` -- Rewrite to Redis-backed async
+- `backend/services/matcher.py` -- Remove full_analysis orchestration
+- `backend/services/llm_service.py` -- New prompts, new methods (career coach)
 - `backend/api/upload.py` -- Hash check, auth, resume_id
 - `backend/api/match.py` -- Redis Stream producer, 202 response
 - `backend/api/chat.py` -- Auth, shared LLM key
-- `backend/api/github.py` -- session_id -> resume_id
-- `backend/api/search.py` -- session_id -> resume_id
-- `backend/api/session.py` -- Remove (or repurpose for report deletion)
-- `backend/services/matcher.py` -- Remove full_analysis orchestration
-- `backend/services/llm_service.py` -- New prompts, new methods
 - `backend/main.py` -- Auth router, DB init, health checks, graceful shutdown
+- `backend/Dockerfile` -- Worker override CMD
+- `backend/Procfile` -- Added worker process
+- `docker-compose.yml` -- 3 services (backend, worker, frontend)
+- `render.yaml` -- Worker service + env vars
 - `frontend/recruiter-ui/src/pages/UploadPage.jsx` -- 3-step wizard
 - `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- Report history, async flow
 - `frontend/recruiter-ui/src/hooks/useBackendStatus.js` -- Remove polling
