@@ -7,8 +7,23 @@ services:
       - "8000:8000"
     volumes:
       - chroma_data:/app/chroma_db
+    env_file:
+      - ./backend/.env
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+    container_name: ai-recruiter-worker
+    command: python worker.py
+    env_file:
+      - ./backend/.env
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    depends_on:
+      - backend
     restart: unless-stopped
 
   frontend:

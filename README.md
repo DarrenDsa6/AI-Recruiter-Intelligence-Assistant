@@ -54,7 +54,10 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 │   │   ├── upload.py            # POST /api/upload
 │   │   ├── match.py             # POST /api/match, /api/match/stream
 │   │   ├── chat.py              # POST /api/chat/stream
-│   │   └── session.py           # DELETE /api/session/end/{id}
+│   │   ├── session.py           # DELETE /api/session/end/{id}
+│   │   ├── github.py            # GitHub data ingestion
+│   │   ├── search.py            # Semantic search
+│   │   └── models.py            # Pydantic models
 │   ├── services/
 │   │   ├── parser.py            # PDF/DOCX text extraction
 │   │   ├── chunker.py           # 500-char text windows
@@ -67,10 +70,20 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 │   │   ├── jd_skill_classifier.py  # Required vs optional
 │   │   ├── matcher.py           # Orchestrator
 │   │   ├── llm_service.py       # Async LLM client
-│   │   └── github_service.py    # GitHub API client
-│   ├── data/                    # skills.json, skill_aliases.json
+│   │   ├── github_service.py    # GitHub API client
+│   │   ├── explainer.py         # Score explanation
+│   │   ├── skill_embedding_cache.py  # Precomputed embeddings
+│   │   ├── model_registry.py    # Model registry
+│   │   └── provider_config.py   # Provider configuration
+│   ├── data/                    # skills.json, skill_aliases.json, skill_embeddings.pkl
 │   ├── services/.env            # LLM_API_KEY
-│   └── .env.example
+│   ├── .env.example
+│   ├── build_skill_cache.py     # Build skill embedding cache
+│   ├── Dockerfile
+│   ├── Procfile
+│   ├── pyproject.toml
+│   ├── requirements.txt
+│   └── runtime.txt
 │
 ├── frontend/recruiter-ui/
 │   ├── src/pages/
@@ -82,9 +95,18 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 │   │   ├── GithubSection.jsx    # GitHub signals panel
 │   │   ├── ReportSection.jsx    # AI strengths/weaknesses/recommendation
 │   │   ├── QuestionsSection.jsx # Accordion interview questions
-│   │   └── ChatSection.jsx      # Streaming markdown chat
+│   │   ├── ChatSection.jsx      # Streaming markdown chat
+│   │   ├── BackendStatus.jsx    # Backend health indicator
+│   │   └── Loader.jsx           # Loading spinner
+│   ├── src/hooks/
+│   │   └── useBackendStatus.js  # Backend status hook
+│   ├── src/services/
+│   │   └── api.js               # API client
 │   ├── src/utils/
 │   │   └── pdfGenerator.js      # PDF export
+│   ├── Dockerfile
+│   ├── nginx.conf
+│   ├── postcss.config.js
 │   └── tailwind.config.js
 ```
 

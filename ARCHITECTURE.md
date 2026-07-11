@@ -149,7 +149,7 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 | **PDF Export** | html2canvas-pro + jsPDF |
 | **Markdown Rendering** | react-markdown + remark-gfm |
 | **File Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
-| **External APIs** | GitHub REST API |
+| **External APIs** | GitHub REST API (optional auth via token) |
 
 ---
 
@@ -165,7 +165,8 @@ AI-Recruiter-Intelligence-Assistant/
 │   │   ├── chat.py              # Follow-up chat streaming
 │   │   ├── session.py           # Session management
 │   │   ├── github.py            # GitHub data ingestion
-│   │   └── search.py            # Semantic search
+│   │   ├── search.py            # Semantic search
+│   │   └── models.py            # Pydantic models
 │   ├── services/
 │   │   ├── parser.py            # PDF/DOCX text extraction
 │   │   ├── chunker.py           # Text chunking
@@ -180,10 +181,13 @@ AI-Recruiter-Intelligence-Assistant/
 │   │   ├── llm_service.py       # LLM API client
 │   │   ├── github_service.py    # GitHub API client
 │   │   ├── explainer.py         # Score explanation
-│   │   └── skill_embedding_cache.py  # Precomputed embeddings
+│   │   ├── skill_embedding_cache.py  # Precomputed embeddings
+│   │   ├── model_registry.py    # Model registry
+│   │   └── provider_config.py   # Provider configuration
 │   └── data/
 │       ├── skills.json           # Skill dictionary
-│       └── skill_aliases.json    # Normalization map
+│       ├── skill_aliases.json    # Normalization map
+│       └── skill_embeddings.pkl  # Precomputed embeddings cache
 │
 ├── frontend/recruiter-ui/
 │   ├── src/
@@ -196,9 +200,18 @@ AI-Recruiter-Intelligence-Assistant/
 │   │   │   ├── GithubSection.jsx # GitHub insights
 │   │   │   ├── ReportSection.jsx # AI report cards
 │   │   │   ├── QuestionsSection.jsx  # Accordion questions
-│   │   │   └── ChatSection.jsx   # Markdown chat
+│   │   │   ├── ChatSection.jsx   # Markdown chat
+│   │   │   ├── BackendStatus.jsx # Backend health indicator
+│   │   │   └── Loader.jsx        # Loading spinner
+│   │   ├── hooks/
+│   │   │   └── useBackendStatus.js  # Backend status hook
+│   │   ├── services/
+│   │   │   └── api.js            # API client
 │   │   └── utils/
 │   │       └── pdfGenerator.js   # PDF export
+│   ├── Dockerfile
+│   ├── nginx.conf
+│   ├── postcss.config.js
 │   └── tailwind.config.js
 ```
 
