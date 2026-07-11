@@ -16,4 +16,5 @@ COPY . .
 
 EXPOSE 8000
 
+# Default: run API server. Override with "python worker.py" for worker container.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
