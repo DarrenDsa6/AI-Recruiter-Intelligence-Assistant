@@ -1,113 +1,150 @@
-from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-import time
+import json
 import logging
+from uuid import UUID
 
-from services.matcher import MatcherService
-from services.vector_store import vector_store
-from services.github_service import GitHubService
-from services.llm_service import llm_service
-from services.provider_config import PROVIDER_CONFIGS
+from fastapi import APIRouter, Depends, Header
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from services.redis_client import get_redis
+from services.db import get_db
+from models.report import TailoringReport
+from schemas.match import MatchRequest, MatchAccepted
+from schemas.common import ErrorResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-matcher = MatcherService(llm_service)
-github_service = GitHubService()
+JOB_STREAM = "tailoring-jobs"
 
 
-class MatchRequest(BaseModel):
-    session_id: str
-    job_description: str
-    github_username: str | None = None
-    github_token: str | None = None
-    provider: str = "openai"
-    model: str = "gpt-4o-mini"
-    api_key: str = ""
-    base_url: str = ""
+async def _get_user_id(authorization: str = Header(...)) -> UUID:
+    import jwt
+    import os
+    token = authorization.replace("Bearer ", "")
+    payload = jwt.decode(token, os.environ.get("JWT_SECRET", ""), algorithms=["HS256"])
+    return UUID(payload["sub"])
 
 
-def _llm_config(provider, model, api_key, base_url=""):
-    if base_url:
-        return api_key, base_url, model
-    provider_cfg = PROVIDER_CONFIGS.get(provider)
-    resolved = provider_cfg["base_url"] if provider_cfg else PROVIDER_CONFIGS["openai"]["base_url"]
-    return api_key, resolved, model
-
-
-@router.post("/match")
-async def match_job_description(request: MatchRequest):
-    start_time = time.time()
-
-    if not request.api_key:
-        return {"error": "API key is required"}
-
-    stored_data = vector_store.get_by_session(request.session_id)
-
-    if not stored_data or not stored_data.get("documents"):
-        return {"error": "Session not found"}
-
-    resume_text = " ".join(stored_data["documents"])
-    logger.info(f"Match: resume length {len(resume_text)} chars")
-
-    github_data = []
-
-    if request.github_username:
-        try:
-            gh_service = GitHubService(token=request.github_token) if request.github_token else github_service
-            github_data = gh_service.get_repositories(request.github_username)
-            logger.info(f"GitHub: {len(github_data)} repos for {request.github_username}")
-        except Exception as e:
-            logger.error(f"GitHub error: {e}")
-
-    api_key, base_url, model = _llm_config(request.provider, request.model, request.api_key, request.base_url)
-
-    result = await matcher.full_analysis(
-        resume={"text": resume_text},
-        jd={"text": request.job_description},
-        github_data=github_data,
-        session_id=request.session_id,
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
+@router.post("/match", response_model=MatchAccepted, status_code=202)
+async def match_job_description(
+    body: MatchRequest,
+    user_id: UUID = Depends(_get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    # Validate resume exists for this user
+    from models.resume import MasterResume
+    result = await db.execute(
+        select(MasterResume).where(
+            MasterResume.id == body.resume_id,
+            MasterResume.user_id == user_id,
+        )
     )
+    resume = result.scalar_one_or_none()
+    if not resume:
+        return ErrorResponse(error="Resume not found")
 
-    total_time = round(time.time() - start_time, 2)
-    logger.info(f"Match completed in {total_time}s")
+    # Create report record
+    report = TailoringReport(
+        user_id=user_id,
+        resume_id=body.resume_id,
+        jd_text=body.jd_text,
+        status="pending",
+    )
+    db.add(report)
+    await db.commit()
+    await db.refresh(report)
 
-    return result
+    # Push job to Redis Stream
+    redis = await get_redis()
+    job_payload = json.dumps({
+        "report_id": str(report.id),
+        "user_id": str(user_id),
+        "resume_id": str(body.resume_id),
+        "jd_text": body.jd_text,
+    })
+    await redis.xadd(JOB_STREAM, {"payload": job_payload})
+
+    logger.info(f"Job queued: report={report.id} resume={body.resume_id}")
+
+    return MatchAccepted(report_id=report.id)
 
 
-@router.post("/match/stream")
-async def stream_match(request: MatchRequest):
-    stored_data = vector_store.get_by_session(request.session_id)
+@router.get("/reports")
+async def list_reports(
+    user_id: UUID = Depends(_get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(TailoringReport)
+        .where(TailoringReport.user_id == user_id)
+        .order_by(TailoringReport.created_at.desc())
+    )
+    reports = result.scalars().all()
 
-    if not stored_data or not stored_data.get("documents"):
-        return {"error": "Session not found"}
+    from models.resume import MasterResume
+    items = []
+    for r in reports:
+        resume_result = await db.execute(
+            select(MasterResume.filename).where(MasterResume.id == r.resume_id)
+        )
+        filename = resume_result.scalar_one_or_none()
+        items.append({
+            "id": r.id,
+            "status": r.status,
+            "jd_text": r.jd_text[:100] + "..." if len(r.jd_text) > 100 else r.jd_text,
+            "filename": filename,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+        })
+    return items
 
-    resume_text = " ".join(stored_data["documents"])
-    api_key, base_url, model = _llm_config(request.provider, request.model, request.api_key, request.base_url)
 
-    async def generator():
-        prompt = f"""
-You are a strict recruiter AI.
+@router.get("/reports/{report_id}")
+async def get_report(
+    report_id: UUID,
+    user_id: UUID = Depends(_get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(TailoringReport).where(
+            TailoringReport.id == report_id,
+            TailoringReport.user_id == user_id,
+        )
+    )
+    report = result.scalar_one_or_none()
+    if not report:
+        return ErrorResponse(error="Report not found")
 
-Analyze this candidate:
+    return {
+        "id": report.id,
+        "status": report.status,
+        "jd_text": report.jd_text,
+        "match_result": report.match_result,
+        "github_analysis": report.github_analysis,
+        "report": report.report,
+        "questions": report.questions,
+        "rewrites": report.rewrites,
+        "error_message": report.error_message,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+        "completed_at": report.completed_at.isoformat() if report.completed_at else None,
+    }
 
-Resume:
-{resume_text}
 
-Job Description:
-{request.job_description}
+@router.get("/reports/{report_id}/status")
+async def get_report_status(
+    report_id: UUID,
+    user_id: UUID = Depends(_get_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(TailoringReport.id, TailoringReport.status).where(
+            TailoringReport.id == report_id,
+            TailoringReport.user_id == user_id,
+        )
+    )
+    row = result.one_or_none()
+    if not row:
+        return ErrorResponse(error="Report not found")
 
-Give detailed reasoning, strengths, weaknesses, and final verdict.
-"""
-
-        try:
-            async for token in llm_service._stream(prompt, api_key, base_url, model):
-                yield token
-        except Exception as e:
-            yield f"\n[ERROR]: {str(e)}"
-
-    return StreamingResponse(generator(), media_type="text/plain")
+    return {"id": row[0], "status": row[1]}

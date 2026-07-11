@@ -1,7 +1,6 @@
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import logging
-import asyncio
 
 from services.vector_store import vector_store
 from services.skills import SkillExtractionService
@@ -16,9 +15,7 @@ logger = logging.getLogger(__name__)
 
 class MatcherService:
 
-    def __init__(self, llm_service):
-        logger.info("Initializing Matcher Service...")
-
+    def __init__(self):
         self.vector_store = vector_store
         self.skill_extractor = SkillExtractionService()
         self.semantic_matcher = SemanticMatcher()
@@ -27,20 +24,17 @@ class MatcherService:
         self.embedding_service = embedder
         self.explainer = MatchExplainer()
 
-        self.llm = llm_service
-
-    def compute_similarity(self, job_description, session_id):
-        stored_data = self.vector_store.get_by_session(session_id)
+    def compute_similarity(self, job_description, resume_id):
+        stored_data = self.vector_store.get_by_resume(resume_id)
 
         vecs = stored_data.get("embeddings")
         documents = stored_data.get("documents", [])
         metadatas = stored_data.get("metadatas", [])
 
         if vecs is None or len(vecs) == 0:
-            raise ValueError("No embeddings found for session")
+            raise ValueError("No embeddings found for resume")
 
         resume_text = " ".join(documents)
-
         resume_embedding = self.aggregate_embeddings(vecs, metadatas)
 
         if metadatas and len(metadatas) > 0 and "skills" in metadatas[0]:
@@ -51,37 +45,26 @@ class MatcherService:
         jd_skills = self.skill_extractor.extract_skills(job_description)
 
         jd_classification = self.jd_classifier.classify_skills(
-            job_description,
-            jd_skills
+            job_description, jd_skills
         )
 
         required_skills = jd_classification["required"]
         optional_skills = jd_classification["optional"]
 
         matched_skills = self.semantic_matcher.semantic_skill_match(
-            resume_skills,
-            jd_skills
+            resume_skills, jd_skills
         )
 
         weighted_result = self.weighted_analyzer.analyze(
-            required_skills,
-            optional_skills,
-            matched_skills
+            required_skills, optional_skills, matched_skills
         )
 
-        jd_embedding = self.embedding_service.get_embeddings(
-            [job_description]
-        )[0]
-
+        jd_embedding = self.embedding_service.get_embeddings([job_description])[0]
         doc_score = float(
-            cosine_similarity(
-                [jd_embedding],
-                [resume_embedding]
-            )[0][0]
+            cosine_similarity([jd_embedding], [resume_embedding])[0][0]
         )
 
         skill_score = weighted_result["match_score"] / 100
-
         final_score = (skill_score * 0.7) + (doc_score * 0.3)
         final_percent = round(final_score * 100, 2)
 
@@ -91,8 +74,11 @@ class MatcherService:
                 weighted_result["missing_required"]
                 + weighted_result["missing_optional"]
             ),
-            match_score=final_percent
+            match_score=final_percent,
         )
+
+        # Identify lowest-scoring chunks for actionable rewrites
+        chunk_scores = self._score_chunks(documents, job_description)
 
         return {
             "required_skills": required_skills,
@@ -103,37 +89,26 @@ class MatcherService:
             "skill_score": weighted_result["match_score"],
             "document_score": round(doc_score * 100, 2),
             "final_score": final_percent,
+            "ats_score": final_percent,
             "summary": explanation["summary"],
-            "recommendations": weighted_result["recommendations"]
+            "recommendations": weighted_result["recommendations"],
+            "low_scoring_chunks": chunk_scores[:3],
         }
 
-    async def full_analysis(self, resume, jd, github_data, session_id, api_key, base_url, model):
-        jd_text = jd["text"]
-
-        match_result = self.compute_similarity(
-            job_description=jd_text,
-            session_id=session_id
-        )
-
-        github_analysis = await self.llm.analyze_github_repos(github_data, api_key, base_url, model)
-
-        report, questions = await asyncio.gather(
-            self.llm.generate_candidate_report(
-                resume["text"], jd_text, match_result, github_analysis,
-                api_key, base_url, model
-            ),
-            self.llm.generate_interview_questions(
-                resume["text"], jd_text, match_result["missing_required"], github_analysis,
-                api_key, base_url, model
-            )
-        )
-
-        return {
-            "match": match_result,
-            "github": github_analysis,
-            "report": report,
-            "questions": questions
-        }
+    def _score_chunks(self, documents, job_description, top_n=3):
+        if not documents:
+            return []
+        jd_embedding = self.embedding_service.get_embeddings([job_description])[0]
+        chunk_embeddings = self.embedding_service.get_embeddings(documents)
+        scores = []
+        for i, (doc, emb) in enumerate(zip(documents, chunk_embeddings)):
+            score = float(cosine_similarity([jd_embedding], [emb])[0][0])
+            scores.append({"chunk_index": i, "text": doc[:200], "score": round(score, 4)})
+        scores.sort(key=lambda x: x["score"])
+        return scores[:top_n]
 
     def aggregate_embeddings(self, embeddings, metadatas):
         return np.mean(embeddings, axis=0)
+
+
+matcher = MatcherService()

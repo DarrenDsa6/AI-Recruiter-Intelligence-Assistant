@@ -4,15 +4,17 @@ import asyncio
 import os
 import logging
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 
+from api.auth import router as auth_router
 from api.upload import router as upload_router
 from api.github import router as github_router
 from api.match import router as match_router
 from api.session import router as session_router
 from api.chat import router as chat_router
 
-from services.session_store import session_store
-from services.vector_store import vector_store
+from services.db import init_db, close_db
+from services.redis_client import close_redis
 from services.model_registry import ModelRegistry, DOC_EMBEDDING_MODEL
 
 logging.basicConfig(
@@ -22,55 +24,44 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def cleanup_sessions():
-    while True:
-        try:
-            expired = session_store.get_expired_sessions()
-
-            for session_id in expired:
-                logger.info(f"Cleaning expired session: {session_id}")
-                deleted = vector_store.delete_by_session(session_id)
-                logger.info(f"Deleted {deleted} chunks")
-                session_store.delete_session(session_id)
-
-        except Exception as e:
-            logger.error(f"Cleanup error: {e}")
-
-        await asyncio.sleep(60)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Initializing database...")
+    await init_db()
+
     logger.info("Pre-warming embedding model...")
     await asyncio.to_thread(ModelRegistry.get, DOC_EMBEDDING_MODEL)
     logger.info("Embedding model loaded")
 
-    logger.info("Starting cleanup worker...")
-    task = asyncio.create_task(cleanup_sessions())
-
     yield
 
-    logger.info("Stopping cleanup worker...")
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        logger.info("Cleanup worker stopped")
+    # Shutdown
+    logger.info("Shutting down...")
+    await close_db()
+    await close_redis()
+    logger.info("Shutdown complete")
 
 
 app = FastAPI(
-    title="AI Recruiter Intelligence Assistant",
-    lifespan=lifespan
+    title="AI Resume Tailor",
+    description="AI-powered resume analysis and optimization for candidates",
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
+# Prometheus metrics
+Instrumentator().instrument(app).expose(app)
+
+# Routers
+app.include_router(auth_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")
 app.include_router(github_router, prefix="/api")
 app.include_router(match_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
 
-
-# CORS: allow localhost dev + any origins from CORS_ORIGINS env var
+# CORS
 _cors_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -91,12 +82,40 @@ app.add_middleware(
 @app.get("/")
 def root():
     return {
-        "service": "AI Recruiter Backend",
+        "service": "AI Resume Tailor",
         "status": "running",
-        "version": "1.0.0"
+        "version": "2.0.0",
     }
 
 
 @app.get("/api/health")
-def health():
-    return {"status": "ok"}
+async def health():
+    checks = {"status": "ok"}
+
+    # Check DB
+    try:
+        from services.db import engine
+        if engine:
+            async with engine.connect() as conn:
+                await conn.execute(
+                    __import__("sqlalchemy").text("SELECT 1")
+                )
+            checks["database"] = "ok"
+        else:
+            checks["database"] = "not initialized"
+    except Exception as e:
+        checks["database"] = f"error: {str(e)}"
+
+    # Check Redis
+    try:
+        from services.redis_client import get_redis
+        redis = await get_redis()
+        await redis.ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {str(e)}"
+
+    if any("error" in v for v in checks.values()):
+        checks["status"] = "degraded"
+
+    return checks

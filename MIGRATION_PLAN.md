@@ -537,13 +537,13 @@ one service, so worker may need a separate plan or alternative host.
 | 1    | 1     | `requirements.txt`, `.env.example`, `docker-compose.yml` | Nothing | **DONE** |
 | 2    | 2     | `db.py` (new), `vector_store.py` (modify)  | Step 1 | **DONE** |
 | 3    | 2     | `session_store.py` (rewrite to Redis), `redis_client.py` (new) | Step 1 | **DONE** |
-| 4    | 3.1   | `auth.py` (new)                            | Steps 2, 3 | |
-| 5    | 3.2   | `upload.py`                                | Steps 2, 4 | |
-| 6    | 3.3   | `match.py`                                 | Steps 2, 4 | |
-| 7    | 3.4   | `chat.py`                                  | Steps 2, 4 | |
-| 8    | 4     | `worker.py` (new), `matcher.py` refactor   | Steps 2, 6 | |
-| 9    | 5     | `llm_service.py`                           | Step 8 | |
-| 10   | 3.5   | `main.py`                                  | Steps 2-9 | |
+| 4    | 3.1   | `auth.py` (new)                            | Steps 2, 3 | **DONE** |
+| 5    | 3.2   | `upload.py`                                | Steps 2, 4 | **DONE** |
+| 6    | 3.3   | `match.py`                                 | Steps 2, 4 | **DONE** |
+| 7    | 3.4   | `chat.py`                                  | Steps 2, 4 | **DONE** |
+| 8    | 4     | `worker.py` (new), `matcher.py` refactor   | Steps 2, 6 | **DONE** |
+| 9    | 5     | `llm_service.py`                           | Step 8 | **DONE** |
+| 10   | 3.5   | `main.py`                                  | Steps 2-9 | **DONE** |
 | 11   | 6.1   | `AuthPage.jsx` (new)                       | Step 4 | |
 | 12   | 6.2   | `UploadPage.jsx`                           | Steps 5, 11 | |
 | 13   | 6.3-6.7 | `Dashboard.jsx`, `useBackendStatus.js`, `api.js`, `App.jsx`, components | Steps 6-10 | |
