@@ -10,7 +10,6 @@ from api.github import router as github_router
 from api.match import router as match_router
 from api.session import router as session_router
 from api.chat import router as chat_router
-from api.models import router as models_router
 
 from services.session_store import session_store
 from services.vector_store import vector_store
@@ -69,7 +68,6 @@ app.include_router(github_router, prefix="/api")
 app.include_router(match_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
-app.include_router(models_router, prefix="/api")
 
 
 # CORS: allow localhost dev + any origins from CORS_ORIGINS env var

@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 class SessionStore:
     def __init__(self):
-        self.ttl = 3600  # 1 hour
+        self.ttl = 3600
 
     async def _redis(self):
         from services.redis_client import get_redis
