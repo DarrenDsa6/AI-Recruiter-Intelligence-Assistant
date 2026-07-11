@@ -544,9 +544,9 @@ one service, so worker may need a separate plan or alternative host.
 | 8    | 4     | `worker.py` (new), `matcher.py` refactor   | Steps 2, 6 | **DONE** |
 | 9    | 5     | `llm_service.py`                           | Step 8 | **DONE** |
 | 10   | 3.5   | `main.py`                                  | Steps 2-9 | **DONE** |
-| 11   | 6.1   | `AuthPage.jsx` (new)                       | Step 4 | |
-| 12   | 6.2   | `UploadPage.jsx`                           | Steps 5, 11 | |
-| 13   | 6.3-6.7 | `Dashboard.jsx`, `useBackendStatus.js`, `api.js`, `App.jsx`, components | Steps 6-10 | |
+| 11   | 6.1   | `AuthPage.jsx` (new)                       | Step 4 | **DONE** |
+| 12   | 6.2   | `UploadPage.jsx`                           | Steps 5, 11 | **DONE** |
+| 13   | 6.3-6.7 | `Dashboard.jsx`, `useBackendStatus.js`, `api.js`, `App.jsx`, components | Steps 6-10 | **DONE** |
 | 14   | 7     | `Dockerfile`, `docker-compose.yml`, `Procfile`, `render.yaml` | All above | |
 
 ---

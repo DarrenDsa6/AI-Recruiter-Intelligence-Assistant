@@ -1,75 +1,95 @@
-const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000/api";
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-function llmConfig() {
-  const cfg = {
-    provider: localStorage.getItem("ai_recruiter_provider") || "openai",
-    model: localStorage.getItem("ai_recruiter_model") || "gpt-4o-mini",
-    api_key: localStorage.getItem("ai_recruiter_api_key") || "",
-  };
-  const customUrl = localStorage.getItem("ai_recruiter_custom_url");
-  if (customUrl) cfg.base_url = customUrl;
-  return cfg;
+function getAuthHeaders() {
+  const token = localStorage.getItem("auth_token");
+  if (!token) throw new Error("Not authenticated");
+  return { Authorization: `Bearer ${token}` };
 }
 
-export async function uploadResume(file) {
-  const formData = new FormData();
-  formData.append("file", file);
+async function request(path, { method = "GET", body, headers = {} } = {}) {
+  const url = `${API_BASE}${path}`;
+  const opts = {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...headers,
+    },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
 
-  const res = await fetch(`${BASE_URL}/upload`, {
+export async function requestOTP(email) {
+  return request("/api/auth/request-otp", {
     method: "POST",
+    body: { email },
+  });
+}
+
+export async function verifyOTP(email, code) {
+  return request("/api/auth/verify-otp", {
+    method: "POST",
+    body: { email, code },
+  });
+}
+
+export async function uploadResumeAndJD(resumeFile, jdText) {
+  const token = localStorage.getItem("auth_token");
+  if (!token) throw new Error("Not authenticated");
+  const formData = new FormData();
+  formData.append("resume_file", resumeFile);
+  formData.append("jd_text", jdText);
+  const res = await fetch(`${API_BASE}/api/upload`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
     body: formData,
   });
-
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || "Upload failed");
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `HTTP ${res.status}`);
   }
-
   return res.json();
 }
 
-export async function matchJD(data) {
-  const res = await fetch(`${BASE_URL}/match`, {
+export async function startMatch(uploadId) {
+  return request(`/api/match/${uploadId}/start`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...data, ...llmConfig() }),
-  });
-
-  if (!res.ok) throw new Error("Match request failed");
-  return res.json();
-}
-
-export async function endSession(sessionId) {
-  await fetch(`${BASE_URL}/session/end/${sessionId}`, {
-    method: "DELETE",
+    headers: getAuthHeaders(),
   });
 }
 
-export function matchStream(sessionId, jobDescription, githubUsername, githubToken) {
-  return fetch(`${BASE_URL}/match/stream`, {
+export async function getMatchStatus(uploadId) {
+  return request(`/api/match/${uploadId}/status`, {
+    headers: getAuthHeaders(),
+  });
+}
+
+export async function fetchReports({ limit = 50, offset = 0 } = {}) {
+  return request(`/api/reports?limit=${limit}&offset=${offset}`, {
+    headers: getAuthHeaders(),
+  });
+}
+
+export async function fetchReport(reportId) {
+  return request(`/api/reports/${reportId}`, {
+    headers: getAuthHeaders(),
+  });
+}
+
+export async function chatWithAI(payload) {
+  return request("/api/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      session_id: sessionId,
-      job_description: jobDescription,
-      github_username: githubUsername || null,
-      github_token: githubToken || null,
-      ...llmConfig(),
-    }),
+    headers: getAuthHeaders(),
+    body: payload,
   });
 }
 
-export function chatStream(sessionId, message) {
-  const cfg = llmConfig();
-  return fetch(`${BASE_URL}/chat/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId, message, ...cfg }),
-  });
-}
-
-export async function fetchModels() {
-  const res = await fetch(`${BASE_URL}/models`);
-  if (!res.ok) throw new Error("Failed to fetch models");
-  return res.json();
+export async function healthCheck() {
+  return request("/health");
 }

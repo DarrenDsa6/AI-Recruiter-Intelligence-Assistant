@@ -1,294 +1,385 @@
-import { useEffect, useState, useCallback, useRef } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
-import ScoreGauge from "../components/ScoreGauge";
-import SkillsSection from "../components/SkillsSection";
-import GithubSection from "../components/GithubSection";
-import ReportSection from "../components/ReportSection";
-import QuestionsSection from "../components/QuestionsSection";
-import ChatSection from "../components/ChatSection";
-import { generateReportPdf } from "../utils/pdfGenerator";
+import { useState, useEffect, useRef, useCallback } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { fetchReports, fetchReport, getMatchStatus, chatWithAI } from "../services/api";
 
-const API = process.env.REACT_APP_API_URL || "http://localhost:8000/api";
+const STATUS_POLL_INTERVAL = 3000;
 
 export default function Dashboard() {
-  const { state } = useLocation();
+  const { reportId } = useParams();
   const navigate = useNavigate();
-
-  const sessionId = state?.sessionId || localStorage.getItem("session_id");
-  const github = state?.github || localStorage.getItem("github_username") || "";
-  const githubToken = state?.githubToken || localStorage.getItem("github_token") || "";
-  const jd = state?.jd || localStorage.getItem("job_description") || "";
-  const provider = state?.provider || localStorage.getItem("ai_recruiter_provider") || "openai";
-  const model = state?.model || localStorage.getItem("ai_recruiter_model") || "gpt-4o-mini";
-  const apiKey = state?.apiKey || localStorage.getItem("ai_recruiter_api_key") || "";
-  const baseUrl = state?.baseUrl || "";
-
+  const [reports, setReports] = useState([]);
+  const [activeReport, setActiveReport] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [data, setData] = useState(null);
-  const [status, setStatus] = useState("Starting analysis...");
-  const [pdfLoading, setPdfLoading] = useState(false);
-  const [retryCount, setRetryCount] = useState(0);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [selectedSkill, setSelectedSkill] = useState(null);
+  const chatEndRef = useRef(null);
 
-  useEffect(() => {
-    if (!sessionId) navigate("/", { replace: true });
-  }, [sessionId, navigate]);
-
-  const retryRef = useRef(0);
-
-  useEffect(() => {
-    if (!sessionId) return;
-
-    let cancelled = false;
-
-    const fetchMatch = async (isRetry = false) => {
-      try {
-        setStatus(
-          isRetry
-            ? "Server is waking up, retrying..."
-            : "Waking up server, loading AI model..."
-        );
-
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 180000);
-
-        const res = await fetch(`${API}/match`, {
-          method: "POST",
-          signal: controller.signal,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            session_id: sessionId,
-            job_description: jd,
-            github_username: github || null,
-            github_token: githubToken || null,
-            provider,
-            model,
-            api_key: apiKey,
-            base_url: baseUrl,
-          }),
-        });
-
-        clearTimeout(timeout);
-
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || `Server error: ${res.status}`);
-        }
-
-        if (cancelled) return;
-
-        const result = await res.json();
-        setData(result);
-        setStatus("Analysis complete");
-        localStorage.removeItem("session_id");
-        localStorage.removeItem("github_username");
-        localStorage.removeItem("github_token");
-        localStorage.removeItem("job_description");
-      } catch (err) {
-        if (cancelled) return;
-
-        if (retryRef.current < 2) {
-          retryRef.current += 1;
-          setRetryCount(retryRef.current);
-          setStatus("Server still waking up, retrying in 10s...");
-          await new Promise((r) => setTimeout(r, 10000));
-          if (!cancelled) return fetchMatch(true);
-        }
-
-        console.error(err);
-        setError(err.message || "Failed to analyze. Check backend connection.");
-        setStatus("Error");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    fetchMatch();
-
-    return () => { cancelled = true; };
-  }, [sessionId, jd, github, githubToken, provider, model, apiKey, baseUrl, navigate]);
-
-  const handleEndSession = useCallback(async () => {
-    try {
-      await fetch(`${API}/session/end/${sessionId}`, { method: "DELETE" });
-    } catch {}
-    navigate("/", { replace: true });
-  }, [sessionId, navigate]);
-
-  const handleDownloadPdf = async () => {
-    setPdfLoading(true);
-    try {
-      await generateReportPdf("report-content", `candidate-report-${sessionId?.slice(0, 8)}.pdf`);
-    } catch (err) {
-      console.error("PDF generation failed:", err);
-    }
-    setPdfLoading(false);
+  const handleLogout = () => {
+    localStorage.removeItem("auth_token");
+    localStorage.removeItem("user_id");
+    localStorage.removeItem("user_email");
+    navigate("/auth", { replace: true });
   };
 
-  if (!sessionId) return null;
+  const loadReports = useCallback(async () => {
+    try {
+      const data = await fetchReports();
+      setReports(data.reports || []);
+      return data.reports || [];
+    } catch {
+      return [];
+    }
+  }, []);
 
-  const match = data?.match || {};
-  const finalScore = match.final_score ?? null;
+  const loadReport = useCallback(async (id) => {
+    try {
+      const report = await fetchReport(id);
+      setActiveReport(report);
+      return report;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function init() {
+      setLoading(true);
+      const allReports = await loadReports();
+      if (cancelled) return;
+
+      if (reportId) {
+        await loadReport(reportId);
+      } else if (allReports.length > 0) {
+        navigate(`/dashboard/${allReports[0].report_id}`, { replace: true });
+        return;
+      }
+      setLoading(false);
+    }
+
+    init();
+    return () => { cancelled = true; };
+  }, [reportId]);
+
+  useEffect(() => {
+    if (!activeReport || activeReport.status === "completed" || activeReport.status === "failed") return;
+
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      if (cancelled) return;
+      try {
+        const statusData = await getMatchStatus(activeReport.upload_id || activeReport.report_id);
+        if (statusData.status === "completed" || statusData.status === "failed") {
+          await loadReport(activeReport.report_id);
+          clearInterval(timer);
+        }
+      } catch {
+        // keep polling
+      }
+    }, STATUS_POLL_INTERVAL);
+
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [activeReport?.report_id, activeReport?.status]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
+
+  const handleChat = async (e) => {
+    e.preventDefault();
+    if (!chatInput.trim() || chatLoading || !activeReport) return;
+
+    const userMsg = chatInput.trim();
+    setChatInput("");
+    setChatMessages((prev) => [...prev, { role: "user", content: userMsg }]);
+    setChatLoading(true);
+
+    try {
+      const data = await chatWithAI({
+        message: userMsg,
+        report_id: activeReport.report_id,
+        selected_skill: selectedSkill,
+        history: chatMessages.map((m) => ({ role: m.role, content: m.content })),
+      });
+      setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+    } catch (err) {
+      setChatMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Error: ${err.message}` },
+      ]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const formatDate = (iso) => new Date(iso).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+
+  const scoreColor = (score) => {
+    if (score >= 80) return "text-green-400";
+    if (score >= 60) return "text-yellow-400";
+    return "text-orange-400";
+  };
+
+  const statusBadge = (status) => {
+    const base = "px-2 py-0.5 rounded-full text-xs font-medium";
+    if (status === "completed") return `${base} bg-green-900/40 text-green-300 border border-green-700/30`;
+    if (status === "failed") return `${base} bg-red-900/40 text-red-300 border border-red-700/30`;
+    return `${base} bg-blue-900/40 text-blue-300 border border-blue-700/30`;
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#0B0F19] flex items-center justify-center">
+        <div className="w-10 h-10 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-[#0B0F19] text-white">
-      {/* HEADER */}
-      <header className="sticky top-0 z-50 border-b border-white/10 bg-[#0B0F19]/80 backdrop-blur-xl">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <h1 className="text-base font-semibold">AI Recruiter</h1>
-            {!loading && (
-              <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                status === "Analysis complete" ? "bg-emerald-900/50 text-emerald-400 border border-emerald-700/50" :
-                status === "Error" ? "bg-red-900/50 text-red-400 border border-red-700/50" :
-                "bg-blue-900/50 text-blue-400 border border-blue-700/50 animate-pulse"
-              }`}>
-                {status}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {!loading && !error && data && (
-              <button
-                onClick={handleDownloadPdf}
-                disabled={pdfLoading}
-                className="text-xs px-3 py-1.5 bg-white/10 hover:bg-white/20 text-gray-300 border border-white/10 rounded-lg transition disabled:opacity-50 flex items-center gap-1.5"
-              >
-                {pdfLoading ? (
-                  <span className="w-3 h-3 border-2 border-gray-400 border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                  </svg>
-                )}
-                {pdfLoading ? "Generating..." : "PDF"}
-              </button>
-            )}
+    <div className="min-h-screen bg-[#0B0F19] flex">
+      <aside className="w-72 border-r border-white/10 flex flex-col bg-white/[0.02]">
+        <div className="p-4 border-b border-white/10 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-gray-300">Reports</h2>
+          <div className="flex gap-1">
             <button
-              onClick={handleEndSession}
-              className="text-xs px-3 py-1.5 bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-700/30 rounded-lg transition"
+              onClick={() => navigate("/")}
+              className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-white/5 transition"
+              title="New analysis"
             >
-              End Session
+              + New
+            </button>
+            <button
+              onClick={handleLogout}
+              className="text-xs text-gray-600 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-white/5 transition"
+            >
+              Logout
             </button>
           </div>
         </div>
-      </header>
-
-      {/* MAIN CONTENT — wrapped for PDF capture */}
-      <main id="report-content" className="max-w-5xl mx-auto px-4 py-6 space-y-6">
-        {/* LOADING */}
-        {loading && (
-          <div className="flex flex-col items-center justify-center py-20 space-y-4">
-            <div className="relative">
-              <div className="w-16 h-16 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="w-8 h-8 border-4 border-purple-500/20 border-t-purple-500 rounded-full animate-spin" style={{ animationDirection: "reverse", animationDuration: "0.8s" }} />
-              </div>
-            </div>
-            <p className="text-sm text-gray-400 animate-pulse">{status}</p>
-            {retryCount > 0 && (
-              <p className="text-xs text-gray-600">Retry attempt {retryCount}/2</p>
-            )}
-          </div>
-        )}
-
-        {/* ERROR */}
-        {!loading && error && (
-          <div className="bg-red-900/20 border border-red-700/30 rounded-2xl p-8 text-center">
-            <svg className="w-12 h-12 text-red-400/50 mx-auto mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-            </svg>
-            <h2 className="text-lg font-semibold text-red-300 mb-2">Analysis Failed</h2>
-            <p className="text-sm text-red-400/70 mb-4">{error}</p>
+        <div className="flex-1 overflow-y-auto">
+          {reports.length === 0 && (
+            <p className="text-xs text-gray-600 p-4">No reports yet.</p>
+          )}
+          {reports.map((r) => (
             <button
-              onClick={() => navigate("/", { replace: true })}
-              className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-sm transition"
+              key={r.report_id}
+              onClick={() => navigate(`/dashboard/${r.report_id}`)}
+              className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/5 transition ${
+                r.report_id === activeReport?.report_id ? "bg-white/[0.07]" : ""
+              }`}
             >
-              Go Back
+              <p className="text-xs text-gray-400 truncate">{r.job_title || "Untitled"}</p>
+              <div className="flex items-center justify-between mt-1">
+                <span className="text-[10px] text-gray-600">{formatDate(r.created_at)}</span>
+                <span className={statusBadge(r.status)}>{r.status}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <main className="flex-1 overflow-y-auto p-8">
+        {!activeReport ? (
+          <div className="text-center py-20">
+            <p className="text-gray-500 text-sm">Select a report or upload a new resume.</p>
+            <button
+              onClick={() => navigate("/")}
+              className="mt-4 px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-medium hover:from-blue-500 hover:to-purple-500 transition"
+            >
+              Upload Resume
             </button>
           </div>
-        )}
-
-        {/* RESULTS */}
-        {!loading && !error && data && (
-          <>
-            {/* Score + Metadata */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 stagger-1 animate-fade-in">
-              <div className="md:col-span-1">
-                <ScoreGauge
-                  score={finalScore ?? 0}
-                  label="Overall Match"
-                  sublabel={match.summary || ""}
-                />
+        ) : activeReport.status === "pending" || activeReport.status === "processing" ? (
+          <div className="text-center py-20 space-y-4">
+            <div className="w-12 h-12 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin mx-auto" />
+            <p className="text-sm text-gray-400">
+              {activeReport.status === "pending" ? "Waiting to be processed..." : "Analyzing resume..."}
+            </p>
+            <p className="text-xs text-gray-600">This page will update automatically.</p>
+          </div>
+        ) : activeReport.status === "failed" ? (
+          <div className="text-center py-20 space-y-4">
+            <div className="w-12 h-12 rounded-full bg-red-900/30 border border-red-700/30 flex items-center justify-center mx-auto">
+              <svg className="w-6 h-6 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+            </div>
+            <p className="text-sm text-red-300">Analysis failed</p>
+            <p className="text-xs text-gray-600">{activeReport.error_message || "Unknown error"}</p>
+            <button
+              onClick={() => navigate("/")}
+              className="mt-2 px-4 py-2 rounded-xl bg-white/10 text-sm hover:bg-white/15 transition"
+            >
+              Try again
+            </button>
+          </div>
+        ) : (
+          <div className="max-w-4xl mx-auto space-y-8 animate-fade-in">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-xl font-bold">{activeReport.job_title || "Resume Analysis"}</h1>
+                <p className="text-xs text-gray-500 mt-1">
+                  Analyzed {formatDate(activeReport.created_at)}
+                  {activeReport.candidate_name && ` for ${activeReport.candidate_name}`}
+                </p>
               </div>
-              <div className="md:col-span-3 grid grid-cols-2 sm:grid-cols-3 gap-4">
-                <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4 flex flex-col items-center justify-center">
-                  <span className="text-2xl font-bold text-emerald-400">{match.skill_score ?? "—"}</span>
-                  <span className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">Skill Score</span>
-                </div>
-                <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4 flex flex-col items-center justify-center">
-                  <span className="text-2xl font-bold text-blue-400">{match.document_score ?? "—"}</span>
-                  <span className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">Doc Score</span>
-                </div>
-                <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-4 flex flex-col items-center justify-center sm:col-span-1 col-span-2">
-                  <span className="text-2xl font-bold text-purple-400">
-                    {match.required_skills?.length ?? "—"}
-                  </span>
-                  <span className="text-[10px] text-gray-500 mt-1 uppercase tracking-wider">Skills Required</span>
-                </div>
+              <div className="text-right">
+                <p className={`text-4xl font-bold ${scoreColor(activeReport.ats_score)}`}>
+                  {activeReport.ats_score != null ? activeReport.ats_score : "—"}
+                  {activeReport.ats_score != null && <span className="text-lg text-gray-500">/100</span>}
+                </p>
+                <p className="text-xs text-gray-500">ATS Score</p>
               </div>
             </div>
 
-            {/* Skills */}
-            <div className="stagger-2 animate-fade-in">
-              <SkillsSection
-                required={match.required_skills}
-                matched={match.matched_skills}
-                missing={[...(match.missing_required || []), ...(match.missing_optional || [])]}
-              />
-            </div>
+            {activeReport.summary && (
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-5">
+                <h3 className="text-sm font-semibold text-gray-300 mb-2">Summary</h3>
+                <p className="text-sm text-gray-400 leading-relaxed">{activeReport.summary}</p>
+              </div>
+            )}
 
-            {/* Recommendations */}
-            {match.recommendations?.length > 0 && (
-              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6 stagger-3 animate-fade-in">
-                <h3 className="text-sm font-semibold text-gray-300 mb-3">Recommendations</h3>
-                <ul className="space-y-1.5">
-                  {match.recommendations.map((r, i) => (
+            {activeReport.strengths?.length > 0 && (
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-5">
+                <h3 className="text-sm font-semibold text-green-400 mb-3">Strengths</h3>
+                <ul className="space-y-2">
+                  {activeReport.strengths.map((s, i) => (
                     <li key={i} className="flex items-start gap-2 text-sm text-gray-400">
-                      <span className="text-amber-400 mt-0.5 shrink-0">→</span>
-                      <span>{typeof r === "string" ? r : r.status || r.name || r.description || r.justification || r.next_steps || JSON.stringify(r)}</span>
+                      <svg className="w-4 h-4 text-green-500 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                      </svg>
+                      {s}
                     </li>
                   ))}
                 </ul>
               </div>
             )}
 
-            {/* GitHub */}
-            {data.github && (
-              <div className="stagger-4 animate-fade-in">
-                <GithubSection data={data.github} />
+            {activeReport.gaps?.length > 0 && (
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-5">
+                <h3 className="text-sm font-semibold text-orange-400 mb-3">Gaps</h3>
+                <ul className="space-y-2">
+                  {activeReport.gaps.map((g, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm text-gray-400">
+                      <svg className="w-4 h-4 text-orange-500 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                      </svg>
+                      {g}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 
-            {/* Report */}
-            {data.report && (
-              <div className="stagger-4 animate-fade-in">
-                <ReportSection report={data.report} />
+            {activeReport.recommendations?.length > 0 && (
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-5">
+                <h3 className="text-sm font-semibold text-blue-400 mb-3">Recommendations</h3>
+                <ul className="space-y-2">
+                  {activeReport.recommendations.map((r, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm text-gray-400">
+                      <svg className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" />
+                      </svg>
+                      {r}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 
-            {/* Questions */}
-            {data.questions && (
-              <div className="stagger-5 animate-fade-in">
-                <QuestionsSection questions={data.questions} />
+            {activeReport.actionable_rewrites?.length > 0 && (
+              <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-5">
+                <h3 className="text-sm font-semibold text-purple-400 mb-3">Actionable Rewrites</h3>
+                <div className="space-y-3">
+                  {activeReport.actionable_rewrites.map((rewrite, i) => (
+                    <div key={i} className="bg-white/[0.03] border border-white/5 rounded-xl p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                          rewrite.section === "experience"
+                            ? "bg-blue-900/30 text-blue-300"
+                            : rewrite.section === "skills"
+                            ? "bg-purple-900/30 text-purple-300"
+                            : rewrite.section === "education"
+                            ? "bg-green-900/30 text-green-300"
+                            : "bg-gray-800/40 text-gray-400"
+                        }`}>
+                          {rewrite.section}
+                        </span>
+                      </div>
+                      {rewrite.original && (
+                        <p className="text-xs text-gray-500 line-through mb-1">{rewrite.original}</p>
+                      )}
+                      <p className="text-sm text-gray-300">{rewrite.rewrite}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
-            {/* Chat */}
-            <div className="animate-fade-in" style={{ animationDelay: "0.6s" }}>
-              <ChatSection sessionId={sessionId} disabled={false} provider={provider} model={model} apiKey={apiKey} baseUrl={baseUrl} />
+            <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-5">
+              <h3 className="text-sm font-semibold text-gray-300 mb-3">Career Coach Chat</h3>
+              {selectedSkill && (
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-xs text-purple-400 bg-purple-900/30 px-2 py-1 rounded-lg">
+                    Focused: {selectedSkill}
+                  </span>
+                  <button
+                    onClick={() => setSelectedSkill(null)}
+                    className="text-xs text-gray-500 hover:text-gray-300"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+              <div className="h-64 overflow-y-auto mb-4 space-y-3">
+                {chatMessages.length === 0 && (
+                  <p className="text-xs text-gray-600 text-center py-8">
+                    Ask about gaps, rewrites, interview prep, or anything else.
+                  </p>
+                )}
+                {chatMessages.map((msg, i) => (
+                  <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                    <div className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${
+                      msg.role === "user"
+                        ? "bg-blue-600/20 text-blue-200"
+                        : "bg-white/5 text-gray-400"
+                    }`}>
+                      {msg.content}
+                    </div>
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-white/5 px-3 py-2 rounded-xl text-sm text-gray-500">
+                      Thinking...
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+              <form onSubmit={handleChat} className="flex gap-2">
+                <input
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Ask the career coach..."
+                  className="flex-1 px-3 py-2 rounded-xl bg-white/5 border border-white/10 focus:outline-none focus:border-blue-500/50 text-sm transition"
+                  disabled={chatLoading}
+                />
+                <button
+                  type="submit"
+                  disabled={chatLoading || !chatInput.trim()}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-medium hover:from-blue-500 hover:to-purple-500 disabled:from-white/10 disabled:to-white/5 transition disabled:cursor-not-allowed"
+                >
+                  Send
+                </button>
+              </form>
             </div>
-          </>
+          </div>
         )}
       </main>
     </div>

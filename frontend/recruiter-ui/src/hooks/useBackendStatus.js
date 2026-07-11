@@ -1,27 +1,32 @@
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
 
-const API = process.env.REACT_APP_API_URL || "http://localhost:8000/api";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export default function useBackendStatus() {
-  const [status, setStatus] = useState("checking");
+  const [status, setStatus] = useState({ connected: false, loading: true });
 
   useEffect(() => {
-    const check = async () => {
+    let cancelled = false;
+
+    async function check() {
       try {
-        const res = await fetch(`${API}/health`);
-        if (res.ok) {
-          setStatus("connected");
-        } else {
-          setStatus("disconnected");
+        const res = await fetch(`${API_URL}/health`);
+        if (!cancelled) {
+          setStatus({ connected: res.ok, loading: false });
         }
       } catch {
-        setStatus("disconnected");
+        if (!cancelled) {
+          setStatus({ connected: false, loading: false });
+        }
       }
-    };
+    }
 
     check();
-    const interval = setInterval(check, 10000);
-    return () => clearInterval(interval);
+    const interval = setInterval(check, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, []);
 
   return status;
