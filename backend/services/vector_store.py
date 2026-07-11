@@ -1,11 +1,14 @@
 import chromadb
 import uuid
+import os
 
 
 class VectorStoreService:
     def __init__(self):
-        self.client = chromadb.Client(
-            settings=chromadb.Settings(anonymized_telemetry=False)
+        persist_dir = os.environ.get("CHROMA_PERSIST_DIR", "./chroma_db")
+        self.client = chromadb.PersistentClient(
+            path=persist_dir,
+            settings=chromadb.Settings(anonymized_telemetry=False),
         )
         self.collection = self.client.get_or_create_collection(
             name="candidate_resumes"

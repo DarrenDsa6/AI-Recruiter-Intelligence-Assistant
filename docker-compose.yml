@@ -18,6 +18,8 @@ services:
       context: ./backend
     container_name: ai-recruiter-worker
     command: python worker.py
+    volumes:
+      - chroma_data:/app/chroma_db
     env_file:
       - ./backend/.env
     environment:
