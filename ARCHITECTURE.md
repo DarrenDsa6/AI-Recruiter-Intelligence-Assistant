@@ -47,9 +47,10 @@ POST /api/upload (authenticated)
         │
         ├── EXISTS? ──► Return existing resume_id (skip processing)
         │
-        └── NEW? ─────► Parser → Chunker → Embedder → ChromaDB
+        └── NEW? ─────► Parser → Chunker → Embedder (all-MiniLM-L6-v2)
                          │
-                         ├── Insert into master_resumes
+                         ├── Insert into master_resumes (metadata)
+                         ├── Insert into resume_chunks (text + Vector(384) embeddings)
                          └── Return { resume_id, filename, skills }
 ```
 
@@ -87,7 +88,7 @@ process_job(payload):
         │
         ├── Update report status → "processing"
         │
-        ├── Pull resume chunks from ChromaDB (by resume_id)
+        ├── Pull resume chunks + embeddings from PostgreSQL (resume_chunks table)
         │
         ├── matcher.compute_similarity(chunks, jd)
         │     ├── Extract JD skills (regex + classifier)
@@ -126,7 +127,7 @@ Dashboard polls → GET /api/reports/:report_id
         ├── status == "pending" / "processing" → show spinner, keep polling (3s)
         ├── status == "failed" → show error
         └── status == "completed" → render full results:
-              ├── ATS Compatibility Score (circular gauge)
+              ├── ATS Compatibility Score (SVG ring gauge)
               ├── Summary
               ├── Strengths / Gaps / Recommendations
               ├── Actionable Rewrites (rewritten bullets)
@@ -142,13 +143,61 @@ User types question
         ▼
 POST /api/chat (authenticated)
         │
-        ├── Load resume chunks from ChromaDB (by resume_id from report)
+        ├── Load resume chunks from PostgreSQL (resume_chunks, pgvector cosine search)
         ├── Load conversation history from Redis session store
         ├── Embed query (all-MiniLM-L6-v2)
-        ├── Retrieve top-5 relevant chunks (cosine similarity)
+        ├── Retrieve top-5 relevant chunks (pgvector cosine_distance)
         ├── Build LLM messages: system (RAG context) + history + question
         │
         └── Stream response via SSE
+```
+
+---
+
+## Database Schema
+
+```
+┌─────────────────────┐     ┌──────────────────────────┐
+│       users          │     │     master_resumes        │
+├─────────────────────┤     ├──────────────────────────┤
+│ id          UUID PK │◄────│ user_id      UUID FK     │
+│ email       TEXT    │     │ id           UUID PK      │
+│ created_at  TIMESTAMPTZ│  │ file_hash    TEXT         │
+│ last_login  TIMESTAMPTZ│  │ raw_text     TEXT         │
+└─────────────────────┘     │ chroma_resume_id TEXT     │
+                            │ filename       TEXT       │
+                            │ created_at     TIMESTAMPTZ│
+                            └──────────┬───────────────┘
+                                       │
+                            ┌──────────▼───────────────┐
+                            │     resume_chunks         │
+                            │    (pgvector enabled)     │
+                            ├──────────────────────────┤
+                            │ id           UUID PK      │
+                            │ resume_id    UUID FK      │
+                            │ chunk_index  INT          │
+                            │ text         TEXT         │
+                            │ embedding    Vector(384)  │
+                            │ skills       TEXT         │
+                            │ created_at   TIMESTAMPTZ  │
+                            └──────────────────────────┘
+
+┌──────────────────────────┐
+│     tailoring_reports     │
+├──────────────────────────┤
+│ id              UUID PK  │
+│ user_id         UUID FK  │
+│ resume_id       UUID FK  │
+│ jd_text         TEXT     │
+│ status          TEXT     │  pending | processing | completed | failed
+│ match_result    JSONB    │
+│ report          JSONB    │
+│ questions       JSONB    │
+│ rewrites        JSONB    │
+│ error_message   TEXT     │
+│ created_at      TIMESTAMPTZ│
+│ completed_at    TIMESTAMPTZ│
+└──────────────────────────┘
 ```
 
 ---
@@ -173,10 +222,9 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 | **Backend** | FastAPI, Python 3.11, Uvicorn |
 | **Auth** | Email OTP (Redis) + JWT (PyJWT) |
 | **Queue** | Redis Streams (Upstash) |
-| **Database** | PostgreSQL (Supabase/Neon) via SQLAlchemy + asyncpg |
-| **Vector DB** | ChromaDB (persistent, keyed by resume_id) |
-| **LLM** | Shared backend API key via AsyncOpenAI |
-| **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 |
+| **Database + Vectors** | PostgreSQL + pgvector (Supabase/Neon) via SQLAlchemy + asyncpg |
+| **LLM** | NVIDIA API (mistralai/mistral-medium-3.5-128b) via AsyncOpenAI |
+| **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 (384 dimensions) |
 | **Email** | Resend |
 | **Metrics** | Prometheus (prometheus-fastapi-instrumentator) |
 | **PDF Export** | html2canvas-pro + jsPDF |
@@ -186,28 +234,32 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 
 ## Key Design Decisions
 
-1. **Candidate-facing, not recruiter-facing.** The UX is designed for job seekers optimizing their own resumes. LLM prompts frame feedback as a career coach, not a gatekeeper.
+1. **Single database for everything.** PostgreSQL stores users, resumes, report metadata, AND vector embeddings via pgvector. No external vector DB to manage.
 
-2. **Async job queue via Redis Streams.** Jobs are submitted instantly (202 Accepted) and processed in a separate worker. This decouples the API from slow LLM calls and allows the worker to scale independently.
+2. **Candidate-facing, not recruiter-facing.** The UX is designed for job seekers optimizing their own resumes. LLM prompts frame feedback as a career coach, not a gatekeeper.
 
-3. **Resume_id keying with SHA-256 dedup.** ChromaDB embeddings are keyed by resume_id (not session_id). If a user uploads the same PDF again, the existing embeddings are reused -- no re-processing.
+3. **Async job queue via Redis Streams.** Jobs are submitted instantly (202 Accepted) and processed in a separate worker. This decouples the API from slow LLM calls and allows the worker to scale independently.
 
-4. **Two-layer scoring.** Deterministic skill matching (semantic + regex) provides consistent, explainable results. The LLM layer adds ATS-aware analysis, rewrites, and interview prep on top.
+4. **Resume_id keying with SHA-256 dedup.** Embeddings are keyed by resume_id (not session_id). If a user uploads the same PDF again, the existing embeddings are reused -- no re-processing.
 
-5. **Redis-backed session store.** Conversation history for chat is stored in Redis with TTL. Survives server restarts, shared between FastAPI and worker, auto-expires.
+5. **Two-layer scoring.** Deterministic skill matching (semantic + regex) provides consistent, explainable results. The LLM layer adds ATS-aware analysis, rewrites, and interview prep on top.
 
-6. **Email OTP only (no passwords).** Simpler auth flow, no password storage, no reset flows. Rate limiting on OTP endpoints prevents abuse.
+6. **Redis-backed session store.** Conversation history for chat is stored in Redis with TTL. Survives server restarts, shared between FastAPI and worker, auto-expires.
 
-7. **Error-resilient rendering.** All LLM-driven data passes through `renderItem` helpers with `toList` guards. Handles inconsistent LLM output formats (strings, objects, arrays) without crashing.
+7. **Email OTP only (no passwords).** Simpler auth flow, no password storage, no reset flows. Rate limiting on OTP endpoints prevents abuse.
 
-8. **Model pre-warming.** The embedding model loads during FastAPI lifespan startup, not on first request. Eliminates 20-40s cold-start delay.
+8. **LLM config at init.** `LLMService` reads `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` once at startup. Callers don't pass credentials -- the client is internal.
+
+9. **Model pre-warming.** The embedding model loads during FastAPI lifespan startup, not on first request. Eliminates 20-40s cold-start delay.
+
+10. **pgvector cosine search.** Vector similarity queries use pgvector's `<=>` operator, keeping everything in SQL with no external dependencies.
 
 ---
 
 ## Production Features
 
+- PostgreSQL + pgvector for data AND embeddings (single DB)
 - Redis-backed session store (survives restarts, auto-expires)
-- PostgreSQL for persistent user/report data
 - Redis Streams for async job processing with consumer groups
 - Email notifications via Resend (OTP + job completion)
 - JWT authentication with rate limiting
@@ -221,4 +273,4 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 
 ---
 
-*Built with FastAPI, React, ChromaDB, Redis Streams, and career coach AI.*
+*Built with FastAPI, React, PostgreSQL + pgvector, Redis Streams, and career coach AI.*
