@@ -44,7 +44,11 @@ export default function UploadPage() {
       const uploadResult = await uploadResumeAndJD(resumeFile);
       if (githubUsername.trim()) {
         setStatusMsg("Ingesting GitHub repos...");
-        await ingestGitHub(uploadResult.resume_id, githubUsername.trim(), githubToken.trim() || undefined);
+        try {
+          await ingestGitHub(uploadResult.resume_id, githubUsername.trim(), githubToken.trim() || undefined);
+        } catch (ghErr) {
+          console.warn("GitHub ingestion failed, continuing without it:", ghErr.message);
+        }
       }
       setStatusMsg("Queuing analysis job...");
       await startMatch(uploadResult.resume_id, jdText);
