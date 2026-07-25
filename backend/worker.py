@@ -10,7 +10,8 @@ from sqlalchemy import select, update
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config.constants import WORKER_STREAM_NAME, WORKER_MAX_RETRIES
-from services.database import init_db, close_db, async_session_factory
+from services.database import init_db, close_db
+import services.database as db_module
 from services.redis import get_redis, close_redis
 from services.matching import matcher
 from services.llm import llm_client
@@ -131,7 +132,7 @@ async def main():
                         continue
 
                     try:
-                        async with async_session_factory() as db:
+                        async with db_module.async_session_factory() as db:
                             await process_job(payload, db, redis)
                     except Exception as e:
                         logger.error(f"Attempt {retries + 1} failed: {e}")
