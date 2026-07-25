@@ -69,7 +69,7 @@ async def match_job_description(
         "resume_id": str(body.resume_id),
         "jd_text": body.jd_text,
     })
-    await redis.xadd(JOB_STREAM, data={"payload": job_payload})
+    await redis.xadd(JOB_STREAM, {"payload": job_payload})
 
     logger.info(f"Job queued: report={report.id} resume={body.resume_id}")
     return MatchAccepted(report_id=report.id)
