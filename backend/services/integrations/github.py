@@ -1,6 +1,6 @@
 import logging
 
-import requests
+import httpx
 
 from config.settings import settings
 
@@ -11,37 +11,55 @@ class GitHubService:
     BASE_URL = "https://api.github.com"
 
     def __init__(self, token: str | None = None):
-        self.session = requests.Session()
+        self.headers = {"Accept": "application/vnd.github.v3+json"}
         effective_token = token or settings.github_token
         if effective_token:
-            self.session.headers.update({"Authorization": f"Bearer {effective_token}"})
+            self.headers["Authorization"] = f"Bearer {effective_token}"
 
-    def get_repositories(self, username: str) -> list[dict]:
-        response = self.session.get(f"{self.BASE_URL}/users/{username}/repos")
-        if response.status_code != 200:
-            raise Exception("Failed to fetch repositories")
+    async def get_repositories(self, username: str) -> list[dict]:
+        async with httpx.AsyncClient(headers=self.headers, timeout=15) as client:
+            repos = []
+            page = 1
+            while page <= 5:
+                resp = await client.get(f"{self.BASE_URL}/users/{username}/repos", params={"page": page, "per_page": 100})
+                if resp.status_code != 200:
+                    logger.warning(f"GitHub repos fetch failed: {resp.status_code}")
+                    break
+                data = resp.json()
+                if not data:
+                    break
+                repos.extend(data)
+                if len(data) < 100:
+                    break
+                page += 1
 
-        repos = response.json()
-        return [
-            {
-                "name": repo["name"],
-                "description": repo["description"],
-                "url": repo["html_url"],
-                "stars": repo["stargazers_count"],
-                "forks": repo["forks_count"],
-                "size_kb": repo["size"],
-                "last_updated": repo["updated_at"],
-                "languages": self.get_languages(repo["languages_url"]),
-                "readme": self.get_readme(username, repo["name"])[:2000],
-            }
-            for repo in repos
-        ]
+            result = []
+            for repo in repos:
+                try:
+                    readme = await self._get_readme(client, username, repo["name"])
+                    languages = await self._get_languages(client, repo.get("languages_url", ""))
+                    result.append({
+                        "name": repo["name"],
+                        "description": repo.get("description") or "",
+                        "url": repo["html_url"],
+                        "stars": repo.get("stargazers_count", 0),
+                        "forks": repo.get("forks_count", 0),
+                        "languages": languages,
+                        "readme": readme[:3000],
+                    })
+                except Exception as e:
+                    logger.warning(f"Skipping repo {repo.get('name')}: {e}")
+                    continue
 
-    def get_languages(self, languages_url: str) -> dict:
-        response = self.session.get(languages_url)
-        return response.json() if response.status_code == 200 else {}
+            return result
 
-    def get_readme(self, username: str, repo_name: str) -> str:
+    async def _get_languages(self, client: httpx.AsyncClient, url: str) -> dict:
+        if not url:
+            return {}
+        resp = await client.get(url)
+        return resp.json() if resp.status_code == 200 else {}
+
+    async def _get_readme(self, client: httpx.AsyncClient, username: str, repo_name: str) -> str:
         url = f"{self.BASE_URL}/repos/{username}/{repo_name}/readme"
-        response = self.session.get(url, headers={"Accept": "application/vnd.github.v3.raw"})
-        return response.text if response.status_code == 200 else ""
+        resp = await client.get(url, headers={**self.headers, "Accept": "application/vnd.github.v3.raw"})
+        return resp.text if resp.status_code == 200 else ""

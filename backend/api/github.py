@@ -38,13 +38,12 @@ async def ingest_github(
 
     try:
         gh_service = GitHubService(token=token) if token else GitHubService()
-        repos = gh_service.get_repositories(username)
+        repos = await gh_service.get_repositories(username)
         chunks = []
         metadatas = []
 
         for repo in repos:
-            readme = gh_service.get_readme(username, repo["name"])
-            combined = f"Repo: {repo['name']}\nDesc: {repo['description']}\nURL: {repo['url']}\nREADME:\n{readme}"
+            combined = f"Repo: {repo['name']}\nDesc: {repo['description']}\nURL: {repo['url']}\nREADME:\n{repo['readme']}"
 
             for chunk in chunker.chunk_text(combined):
                 chunks.append(chunk)
