@@ -29,6 +29,7 @@ logger = logging.getLogger("worker")
 LAST_ID_KEY_URGENT = "worker:last_stream_id:urgent"
 LAST_ID_KEY_EMAIL = "worker:last_stream_id:email"
 CLEANUP_INTERVAL = 100
+WORKER_CONCURRENCY = 3
 
 LAST_ID_URGENT = "0"
 LAST_ID_EMAIL = "0"
@@ -136,7 +137,7 @@ def parse_entry(raw_fields):
 
 async def main():
     global LAST_ID_URGENT, LAST_ID_EMAIL
-    logger.info("Starting worker...")
+    logger.info(f"Starting worker (concurrency={WORKER_CONCURRENCY})...")
     await init_db()
     redis = await get_redis()
 
@@ -166,7 +167,24 @@ async def main():
     except Exception:
         pass
 
-    logger.info(f"Listening on streams '{WORKER_STREAM_URGENT}' (priority) and '{WORKER_STREAM_EMAIL}' (email)")
+    semaphore = asyncio.Semaphore(WORKER_CONCURRENCY)
+    active_tasks: set[asyncio.Task] = set()
+
+    async def run_job(payload, is_urgent, retries):
+        async with semaphore:
+            try:
+                async with db_module.async_session_factory() as db:
+                    await process_job(payload, db, redis)
+            except Exception as e:
+                logger.error(f"Attempt {retries + 1} failed: {e}")
+                if retries < WORKER_MAX_RETRIES - 1:
+                    retry_payload = json.dumps({**payload, "retries": retries + 1})
+                    retry_stream = WORKER_STREAM_URGENT if is_urgent else WORKER_STREAM_EMAIL
+                    await redis.xadd(retry_stream, "*", {"payload": retry_payload})
+                else:
+                    logger.error(f"Max retries reached for report={payload.get('report_id')}")
+
+    logger.info(f"Listening on '{WORKER_STREAM_URGENT}' (priority) and '{WORKER_STREAM_EMAIL}' (email)")
 
     poll_count = 0
     while True:
@@ -190,13 +208,11 @@ async def main():
                 await asyncio.sleep(10)
                 continue
 
-            found_job = False
             for stream_name, messages in entries:
                 for msg_id, raw_fields in messages:
-                    found_job = True
                     data = parse_entry(raw_fields)
                     is_urgent = stream_name == WORKER_STREAM_URGENT
-                    logger.info(f"Received job: msg_id={msg_id}, stream={'urgent' if is_urgent else 'email'}")
+                    logger.info(f"Received job: msg_id={msg_id}, stream={'urgent' if is_urgent else 'email'}, active={len(active_tasks)}")
 
                     if is_urgent:
                         LAST_ID_URGENT = msg_id
@@ -218,31 +234,18 @@ async def main():
                         payload = json.loads(raw_payload)
                         retries = int(data.get("retries", 0))
                     except Exception as parse_err:
-                        logger.error(f"Failed to parse entry: {parse_err}, raw_fields={raw_fields}")
+                        logger.error(f"Failed to parse entry: {parse_err}")
                         continue
 
-                    try:
-                        async with db_module.async_session_factory() as db:
-                            await process_job(payload, db, redis)
-                    except Exception as e:
-                        logger.error(f"Attempt {retries + 1} failed: {e}")
-                        if retries < WORKER_MAX_RETRIES - 1:
-                            retry_payload = json.dumps({**payload, "retries": retries + 1})
-                            retry_stream = WORKER_STREAM_URGENT if is_urgent else WORKER_STREAM_EMAIL
-                            await redis.xadd(retry_stream, "*", {"payload": retry_payload})
-                        else:
-                            logger.error(f"Max retries reached for report={payload.get('report_id')}")
+                    task = asyncio.create_task(run_job(payload, is_urgent, retries))
+                    active_tasks.add(task)
+                    task.add_done_callback(active_tasks.discard)
 
-                    try:
-                        await redis.xtrim(WORKER_STREAM_URGENT, maxlen=50)
-                        await redis.xtrim(WORKER_STREAM_EMAIL, maxlen=50)
-                    except Exception:
-                        pass
-
-                    break
-
-                if found_job:
-                    break
+            try:
+                await redis.xtrim(WORKER_STREAM_URGENT, maxlen=50)
+                await redis.xtrim(WORKER_STREAM_EMAIL, maxlen=50)
+            except Exception:
+                pass
 
         except asyncio.CancelledError:
             logger.info("Worker shutting down...")
@@ -250,6 +253,10 @@ async def main():
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
             await asyncio.sleep(5)
+
+    if active_tasks:
+        logger.info(f"Waiting for {len(active_tasks)} active jobs to finish...")
+        await asyncio.gather(*active_tasks, return_exceptions=True)
 
     await close_db()
     await close_redis()
