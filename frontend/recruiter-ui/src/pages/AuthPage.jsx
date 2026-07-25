@@ -71,10 +71,7 @@ export default function AuthPage() {
     setLoading(true);
     setError("");
     try {
-      const { token, user_id } = await verifyOTP(email, fullCode);
-      localStorage.setItem("auth_token", token);
-      localStorage.setItem("user_id", user_id);
-      localStorage.setItem("user_email", email);
+      await verifyOTP(email, fullCode);
       navigate("/", { replace: true });
     } catch (err) {
       setError(err.message || "Invalid code");

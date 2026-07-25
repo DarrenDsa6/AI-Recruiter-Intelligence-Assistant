@@ -54,10 +54,11 @@ class MatcherService:
         resume_text = " ".join(documents)
         resume_embedding = self._aggregate_embeddings(vecs)
 
-        if metadatas and "skills" in metadatas[0]:
-            resume_skills = metadatas[0]["skills"]
-        else:
+        resume_skills = metadatas[0].get("skills", "") if metadatas else ""
+        if not resume_skills:
             resume_skills = self.skill_extractor.extract_skills(resume_text)
+        else:
+            resume_skills = [s.strip() for s in resume_skills.split(",") if s.strip()]
 
         jd_skills = self.skill_extractor.extract_skills(job_description)
         jd_classification = self.jd_classifier.classify_skills(job_description, jd_skills)

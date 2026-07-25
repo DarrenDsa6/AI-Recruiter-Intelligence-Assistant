@@ -1,8 +1,10 @@
 import json
+import asyncio
 import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +16,7 @@ from services.guardrails import validate_jd_text
 from models.report import TailoringReport
 from models.resume import MasterResume
 from schemas.match import MatchRequest, MatchAccepted
+from config.constants import RATE_LIMIT_MATCHES_MAX, RATE_LIMIT_MATCHES_WINDOW_SECONDS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,6 +33,17 @@ async def match_job_description(
     jd_guardrail_error = validate_jd_text(body.jd_text, user_id)
     if jd_guardrail_error:
         raise HTTPException(status_code=422, detail=jd_guardrail_error)
+
+    redis = await get_redis()
+    rate_key = f"match_rate:{user_id}"
+    count = await redis.incr(rate_key)
+    if count == 1:
+        await redis.expire(rate_key, RATE_LIMIT_MATCHES_WINDOW_SECONDS)
+    if count > RATE_LIMIT_MATCHES_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily match limit reached ({RATE_LIMIT_MATCHES_MAX}). Try again tomorrow.",
+        )
 
     classification = await classify_document(body.jd_text)
     logger.info(
@@ -62,12 +76,12 @@ async def match_job_description(
     await db.commit()
     await db.refresh(report)
 
-    redis = await get_redis()
     job_payload = json.dumps({
         "report_id": str(report.id),
         "user_id": str(user_id),
         "resume_id": str(body.resume_id),
         "jd_text": body.jd_text,
+        "send_email": body.send_email,
     })
     entry_id = await redis.xadd(JOB_STREAM, "*", {"payload": job_payload})
     logger.info(f"Stream entry id: {entry_id}")
@@ -153,3 +167,43 @@ async def get_report_status(
         raise HTTPException(status_code=404, detail="Report not found")
 
     return {"id": row[0], "status": row[1]}
+
+
+@router.get("/reports/{report_id}/stream")
+async def stream_report_status(
+    report_id: UUID,
+    user_id: UUID = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(TailoringReport.id, TailoringReport.status).where(
+            TailoringReport.id == report_id,
+            TailoringReport.user_id == user_id,
+        )
+    )
+    row = result.one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    if row[1] in ("completed", "failed"):
+        async def immediate():
+            yield f"data: {json.dumps({'status': row[1]})}\n\n"
+        return StreamingResponse(immediate(), media_type="text/event-stream")
+
+    async def subscribe():
+        redis = await get_redis()
+        pubsub = redis.pubsub()
+        channel = f"report:{report_id}"
+        await pubsub.subscribe(channel)
+        try:
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    data = json.loads(message["data"])
+                    yield f"data: {json.dumps(data)}\n\n"
+                    if data.get("status") in ("completed", "failed"):
+                        break
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
+
+    return StreamingResponse(subscribe(), media_type="text/event-stream")

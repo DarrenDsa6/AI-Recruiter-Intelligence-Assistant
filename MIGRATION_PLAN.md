@@ -152,22 +152,49 @@ Redis Streams-backed job queue, pgvector embeddings, multi-layer security, Brevo
 - `config/settings.py`: Brevo API key, sender email, sender name
 - Replaced Resend with Brevo in `.env.example`
 
+## Phase 17: Storage Optimization & TTL Cleanup -- DONE
+
+- `services/cleanup/purger.py`: TTL-based deletion of old chunks (7d), reports (14d), orphaned resumes
+- `services/storage/vector_store.py`: Text reconstruction from raw_text + chunk_start_char/chunk_end_char; empty text for new resume chunks; empty skills for all new chunks
+- `services/matching/matcher.py`: Derives skills at query time via SkillExtractionService when not stored
+- `services/parsing/chunker.py`: Returns `list[dict]` with `text`, `start`, `end` offsets
+- `models/chunk.py`: Added `chunk_start_char` and `chunk_end_char` Integer columns
+- `migrations/versions/002_add_chunk_offsets.py`: Alembic migration for offset columns
+- `worker.py`: Periodic cleanup every 100 stream polls (~17min)
+- `config/constants.py`: CHUNK_RETENTION_DAYS=7, REPORT_RETENTION_DAYS=14
+- Storage savings: ~20% from text reconstruction + ~5% from skill derivation
+
+## Phase 18: Architecture Gap Fixes -- DONE
+
+Fixed all discrepancies between ARCHITECTURE.md documentation and actual codebase:
+
+- **Chunk offsets**: `chunk_start_char`/`chunk_end_char` added to model, migration, chunker, and vector_store. Text reconstruction uses stored offsets instead of CHUNK_SIZE math.
+- **SSE via Redis Pub/Sub**: Worker publishes `{"status": "completed/failed"}` to `report:{report_id}` channel after DB commit. SSE endpoint subscribes to Redis Pub/Sub instead of polling DB every 2s.
+- **No localStorage**: Removed all `localStorage.setItem`/`getItem` calls from AuthPage, UploadPage, Dashboard. User email fetched from `GET /api/auth/me` via HttpOnly cookie.
+- **Stream trimming**: Worker runs `XTRIM MAXLEN ~50` after each message and on startup to prevent unbounded accumulation.
+- **Idempotency**: Worker checks report status before processing; skips if already `completed` or `failed`.
+- **pyproject.toml**: Removed chromadb dependency.
+- **settings.py**: Removed Resend config fields (replaced by Brevo).
+
 ---
 
 ## Security Notes
 
 1. LLM API key is server-side only (never sent to frontend)
-2. JWT tokens stored in localStorage, validated on all protected endpoints
+2. JWT tokens stored in HttpOnly cookie, validated on all protected endpoints
 3. Rate limiting on OTP endpoints (3/email/5min)
 4. Rate limiting on chat (50 msgs/session/hour)
-5. SHA-256 resume deduplication prevents re-processing
-6. **Upload security**: Magic-byte verification, size/page/text limits, two-tier document classification, content moderation, two-tier injection scanning
-7. **JD validation**: Two-tier classification check, injection scan, content moderation, length limit
-8. **Chat security**: Query classification, two-tier injection detection, rate limiting, output sanitization
-9. **Prompt hardening**: "Data only" instructions, document delimiters, domain lock, no prompt disclosure
-10. **Authorization**: All resource endpoints verify user_id ownership (returns 404)
-11. Alembic migrations for schema versioning
-12. Centralized config (no hardcoded secrets)
+5. Rate limiting on matches (5/day/user)
+6. SHA-256 resume deduplication prevents re-processing
+7. **Upload security**: Magic-byte verification, size/page/text limits, two-tier document classification, content moderation, two-tier injection scanning
+8. **JD validation**: Two-tier classification check, injection scan, content moderation, length limit
+9. **Chat security**: Query classification, two-tier injection detection, rate limiting, output sanitization
+10. **Prompt hardening**: "Data only" instructions, document delimiters, domain lock, no prompt disclosure
+11. **Authorization**: All resource endpoints verify user_id ownership (returns 404)
+12. **PII scrubbing**: Resume text scrubbed before LLM calls (emails, phones, SSNs, credit cards, IPs, addresses)
+13. **TTL auto-cleanup**: Old chunks (7d), reports (14d), and orphaned resumes purged automatically
+14. Alembic migrations for schema versioning
+15. Centralized config (no hardcoded secrets)
 
 ---
 
@@ -176,18 +203,27 @@ Redis Streams-backed job queue, pgvector embeddings, multi-layer security, Brevo
 - [x] Redis-backed session store (survives restarts, auto-expires)
 - [x] PostgreSQL + pgvector for persistent data AND embeddings
 - [x] Redis Streams for async job processing
+- [x] Stream trimming (XTRIM MAXLEN ~50) to prevent unbounded accumulation
+- [x] Idempotency check to skip already-processed reports on worker restart
 - [x] Email OTP via Brevo (branded HTML templates)
-- [x] Report completion emails via Brevo (score + dashboard link)
-- [x] JWT authentication with rate limiting
+- [x] Report completion emails via Brevo (score + dashboard link + PDF attachment)
+- [x] JWT authentication with HttpOnly cookie
 - [x] OTP-based email verification (Redis-backed, 5min TTL)
 - [x] SHA-256 resume deduplication
 - [x] JD embedding caching (Redis, SHA-256 key, 24h TTL)
+- [x] TTL auto-cleanup (7d chunks, 14d reports, orphaned resumes)
+- [x] Text reconstruction from raw_text (20% storage savings)
+- [x] Skill derivation at query time (5% storage savings)
+- [x] PII scrubbing before LLM calls
+- [x] Daily match rate limiting (5/day/user)
+- [x] SSE streaming for job status updates
+- [x] Layout-aware PDF parsing
 - [x] Prometheus metrics (request latency, error rates, throughput)
-- [x] Health check endpoint (DB + Redis)
+- [x] Health check endpoint (DB + Redis, cached 30s)
 - [x] Graceful shutdown (DB pool, Redis connections)
 - [x] Retry with exponential backoff in worker
 - [x] Dead letter stream for failed jobs
-- [x] Rate limiting on OTP (3/5min) and chat (50 msgs/session/hour)
+- [x] Rate limiting on OTP (3/5min), chat (50 msgs/session/hour), and matches (5/day)
 - [x] Upload validation (magic bytes, size, pages, text length)
 - [x] Two-tier document classification (heuristic + LLM)
 - [x] Two-tier injection detection (regex + LLM)
@@ -197,7 +233,7 @@ Redis Streams-backed job queue, pgvector embeddings, multi-layer security, Brevo
 - [x] Chat guardrails (injection, off-topic, output sanitization)
 - [x] Hardened LLM prompts with document delimiters
 - [x] Authorization checks on all resource endpoints
-- [x] Modular guardrails package (6 focused modules)
+- [x] Modular guardrails package (7 focused modules including PII)
 - [x] Explainable scoring with category breakdowns
 - [x] Centralized config (Pydantic BaseSettings)
 - [x] Shared auth dependency (no duplication)
@@ -208,7 +244,7 @@ Redis Streams-backed job queue, pgvector embeddings, multi-layer security, Brevo
 
 ## Files Summary
 
-### New Files (Phases 15-16)
+### New Files (Phases 15-18)
 - `backend/services/guardrails/__init__.py` -- Re-exports all guardrail functions
 - `backend/services/guardrails/injection.py` -- Regex + LLM injection detection
 - `backend/services/guardrails/moderation.py` -- Content moderation patterns
@@ -216,26 +252,42 @@ Redis Streams-backed job queue, pgvector embeddings, multi-layer security, Brevo
 - `backend/services/guardrails/output.py` -- Output sanitization
 - `backend/services/guardrails/rate_limit.py` -- Redis-based rate limiting
 - `backend/services/guardrails/upload.py` -- Upload/JD validation helpers
+- `backend/services/guardrails/pii.py` -- PII scrubbing (emails, phones, SSNs, credit cards, IPs, addresses)
 - `backend/services/integrations/brevo.py` -- Brevo email service (OTP + report notifications)
+- `backend/services/cleanup/__init__.py` -- Cleanup module exports
+- `backend/services/cleanup/purger.py` -- TTL-based data purger (chunks, reports, orphaned resumes)
+- `backend/services/pdf/__init__.py` -- PDF report generation (fpdf2)
+- `backend/migrations/versions/002_add_chunk_offsets.py` -- Alembic migration for chunk offset columns
 
-### Modified Files (Phases 15-16)
-- `backend/api/auth.py` -- Full OTP flow (request-otp, verify-otp, anonymous) with Brevo
-- `backend/api/upload.py` -- Uses modular guardrails, two-tier classification
-- `backend/api/match.py` -- Uses validate_jd_text, two-tier classification
-- `backend/api/chat.py` -- Async validate_message, modular guardrails imports
-- `backend/api/github.py` -- Added auth + ownership check
+### Modified Files (Phases 15-18)
+- `backend/api/auth.py` -- Full OTP flow (request-otp, verify-otp, anonymous) with Brevo + HttpOnly cookie
+- `backend/api/upload.py` -- Uses modular guardrails, two-tier classification, chunk offsets in metadata
+- `backend/api/match.py` -- Uses validate_jd_text, two-tier classification, daily rate limit, email opt-in, SSE via Redis Pub/Sub
+- `backend/api/chat.py` -- Async validate_message, modular guardrails imports, optional resume_id
+- `backend/api/github.py` -- Added auth + ownership check, chunk offsets in metadata
 - `backend/api/search.py` -- Added auth + ownership check
 - `backend/api/session.py` -- Added auth + ownership check
-- `backend/services/llm/client.py` -- Added classify_document, detect_injection methods
+- `backend/models/chunk.py` -- Added chunk_start_char and chunk_end_char columns
+- `backend/services/llm/client.py` -- Added classify_document, detect_injection methods, timeout/retry
 - `backend/services/llm/prompts.py` -- Added CLASSIFICATION_SYSTEM_PROMPT
-- `backend/services/matching/matcher.py` -- JD caching, category breakdown
-- `backend/config/settings.py` -- Brevo config fields
-- `backend/config/constants.py` -- JD_EMBEDDING_CACHE_TTL
-- `backend/worker.py` -- Passes redis to matcher, sends Brevo email on completion
+- `backend/services/matching/matcher.py` -- JD caching, category breakdown, skill derivation at query time
+- `backend/services/parsing/chunker.py` -- Returns list[dict] with text, start, end offsets
+- `backend/services/storage/vector_store.py` -- Text reconstruction using stored offsets, empty text/skills for new chunks
+- `backend/config/settings.py` -- Brevo config fields, removed Resend
+- `backend/config/constants.py` -- JD_EMBEDDING_CACHE_TTL, CHUNK_RETENTION_DAYS, REPORT_RETENTION_DAYS
+- `backend/worker.py` -- XREAD (not xreadgroup), PII scrubbing, email with PDF, stream trimming, idempotency check, Redis Pub/Sub publish
 - `backend/schemas/auth.py` -- RequestOTPRequest, VerifyOTPRequest, EmailStr
-- `backend/requirements.txt` -- Added email-validator
+- `backend/schemas/match.py` -- send_email field
+- `backend/schemas/chat.py` -- Optional resume_id
+- `backend/requirements.txt` -- Added email-validator, fpdf2
+- `backend/pyproject.toml` -- Removed chromadb
 - `backend/.env.example` -- Brevo config (replaced Resend)
-- `ARCHITECTURE.md`, `README.md`, `MIGRATION_PLAN.md` -- Updated documentation
+- `frontend/recruiter-ui/src/pages/AuthPage.jsx` -- Removed localStorage calls
+- `frontend/recruiter-ui/src/pages/UploadPage.jsx` -- User email from /api/auth/me, sign-out
+- `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- User email from /api/auth/me, sign-out
+- `frontend/recruiter-ui/src/components/ChatSection.jsx` -- import.meta.env.VITE_API_URL, credentials:include
+- `frontend/recruiter-ui/src/services/api.js` -- credentials:include on all requests
+- `ARCHITECTURE.md`, `README.md`, `MIGRATION_PLAN.md`, `PROJECT_FLOW.md` -- Updated documentation
 
 ### Deleted Files (Phase 15)
 - `backend/services/guardrails.py` (replaced by guardrails/ package)

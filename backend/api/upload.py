@@ -83,15 +83,16 @@ async def upload_document(
             return UploadRejectResponse(reason=guardrail_error, filename=file.filename)
 
         resume_skills = skill_extractor.extract_skills(text)
-        chunks = chunker.chunk_text(text)
+        chunk_dicts = chunker.chunk_text(text)
 
-        if not chunks:
+        if not chunk_dicts:
             return UploadRejectResponse(
                 reason="Could not extract meaningful content from the document.",
                 filename=file.filename,
             )
 
-        embeddings = embedder.embed_documents(chunks)
+        chunk_texts = [c["text"] for c in chunk_dicts]
+        embeddings = embedder.embed_documents(chunk_texts)
         if not embeddings:
             return UploadRejectResponse(
                 reason="Failed to generate embeddings for the document.",
@@ -108,11 +109,15 @@ async def upload_document(
         await db.commit()
         await db.refresh(resume)
 
+        metadatas = [
+            {"source": "resume", "skills": ", ".join(resume_skills), "chunk_start": c["start"], "chunk_end": c["end"]}
+            for c in chunk_dicts
+        ]
         await vector_store.add_documents(
             db=db,
-            documents=chunks,
+            documents=chunk_texts,
             embeddings=embeddings,
-            metadatas=[{"source": "resume", "skills": ", ".join(resume_skills)} for _ in chunks],
+            metadatas=metadatas,
             resume_id=str(resume.id),
         )
         await db.commit()

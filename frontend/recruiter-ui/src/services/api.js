@@ -1,15 +1,10 @@
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-function getAuthHeaders() {
-  const token = localStorage.getItem("auth_token");
-  if (!token) throw new Error("Not authenticated");
-  return { Authorization: `Bearer ${token}` };
-}
-
 async function request(path, { method = "GET", body, headers = {} } = {}) {
   const url = `${API_BASE}${path}`;
   const opts = {
     method,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...headers,
@@ -26,13 +21,11 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
 }
 
 export async function uploadResumeAndJD(resumeFile) {
-  const token = localStorage.getItem("auth_token");
-  if (!token) throw new Error("Not authenticated");
   const formData = new FormData();
   formData.append("file", resumeFile);
   const res = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
+    credentials: "include",
     body: formData,
   });
   if (!res.ok) {
@@ -42,36 +35,28 @@ export async function uploadResumeAndJD(resumeFile) {
   return res.json();
 }
 
-export async function startMatch(resumeId, jdText) {
+export async function startMatch(resumeId, jdText, sendEmail = false) {
   return request("/api/match", {
     method: "POST",
-    headers: getAuthHeaders(),
-    body: { resume_id: resumeId, jd_text: jdText },
+    body: { resume_id: resumeId, jd_text: jdText, send_email: sendEmail },
   });
 }
 
 export async function getReportStatus(reportId) {
-  return request(`/api/reports/${reportId}/status`, {
-    headers: getAuthHeaders(),
-  });
+  return request(`/api/reports/${reportId}/status`);
 }
 
 export async function fetchReports() {
-  return request("/api/reports", {
-    headers: getAuthHeaders(),
-  });
+  return request("/api/reports");
 }
 
 export async function fetchReport(reportId) {
-  return request(`/api/reports/${reportId}`, {
-    headers: getAuthHeaders(),
-  });
+  return request(`/api/reports/${reportId}`);
 }
 
 export async function chatWithAI(payload) {
   return request("/api/chat/stream", {
     method: "POST",
-    headers: getAuthHeaders(),
     body: payload,
   });
 }
@@ -82,7 +67,6 @@ export async function ingestGitHub(resumeId, username, token) {
   const qs = params.toString() ? `?${params.toString()}` : "";
   return request(`/api/github/${resumeId}/${encodeURIComponent(username)}${qs}`, {
     method: "POST",
-    headers: getAuthHeaders(),
   });
 }
 
@@ -102,4 +86,31 @@ export async function verifyOTP(email, otp) {
     method: "POST",
     body: { email, otp },
   });
+}
+
+export async function checkAuth() {
+  return request("/api/auth/me");
+}
+
+export async function logout() {
+  return request("/api/auth/logout", { method: "POST" });
+}
+
+export function streamReportStatus(reportId, onStatus, onError) {
+  const url = `${API_BASE}/api/reports/${reportId}/stream`;
+  const eventSource = new EventSource(url, { withCredentials: true });
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      onStatus(data.status);
+      if (data.status === "completed" || data.status === "failed") {
+        eventSource.close();
+      }
+    } catch {}
+  };
+  eventSource.onerror = (err) => {
+    eventSource.close();
+    if (onError) onError(err);
+  };
+  return eventSource;
 }

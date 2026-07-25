@@ -27,7 +27,15 @@ class ParserService:
                 temp_path = tmp.name
             doc = fitz.open(temp_path)
             validate_page_count(doc)
-            return "".join(page.get_text() for page in doc)
+            lines = []
+            for page in doc:
+                blocks = page.get_text("blocks")
+                blocks.sort(key=lambda b: (round(b[1] / 10) * 10, b[0]))
+                for b in blocks:
+                    text = b[4].strip()
+                    if text:
+                        lines.append(text)
+            return "\n".join(lines)
         finally:
             if doc:
                 doc.close()

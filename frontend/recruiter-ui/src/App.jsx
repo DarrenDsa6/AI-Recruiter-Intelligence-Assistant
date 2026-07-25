@@ -3,36 +3,16 @@ import { Routes, Route, Navigate, Outlet } from "react-router-dom";
 import AuthPage from "./pages/AuthPage";
 import UploadPage from "./pages/UploadPage";
 import Dashboard from "./pages/Dashboard";
-
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+import { checkAuth } from "./services/api";
 
 function AuthGate() {
   const [ready, setReady] = useState(false);
   const [redirect, setRedirect] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem("auth_token");
-    if (token) {
-      try {
-        const payload = JSON.parse(atob(token.split(".")[1]));
-        if (payload.exp * 1000 < Date.now()) {
-          localStorage.removeItem("auth_token");
-          localStorage.removeItem("user_id");
-          localStorage.removeItem("user_email");
-          setRedirect(true);
-        } else {
-          setReady(true);
-          return;
-        }
-      } catch {
-        localStorage.removeItem("auth_token");
-        localStorage.removeItem("user_id");
-        localStorage.removeItem("user_email");
-        setRedirect(true);
-      }
-    } else {
-      setRedirect(true);
-    }
+    checkAuth()
+      .then(() => setReady(true))
+      .catch(() => setRedirect(true));
   }, []);
 
   if (redirect) {

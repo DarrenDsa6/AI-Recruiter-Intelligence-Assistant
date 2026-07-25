@@ -5,6 +5,7 @@ from uuid import UUID
 class MatchRequest(BaseModel):
     resume_id: UUID
     jd_text: str
+    send_email: bool = False
 
 
 class MatchAccepted(BaseModel):

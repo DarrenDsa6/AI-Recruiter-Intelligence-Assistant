@@ -1,9 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { fetchReports, fetchReport, getReportStatus, chatWithAI } from "../services/api";
+import { fetchReports, fetchReport, chatWithAI, streamReportStatus, checkAuth } from "../services/api";
 import GithubSection from "../components/GithubSection";
-
-const STATUS_POLL_INTERVAL = 3000;
 
 function ReportSection({ title, color, icon, children, delay }) {
   const [open, setOpen] = useState(true);
@@ -37,12 +35,20 @@ export default function Dashboard() {
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState(null);
+  const [userEmail, setUserEmail] = useState("");
   const chatEndRef = useRef(null);
 
-  const handleLogout = () => {
-    localStorage.removeItem("auth_token");
-    localStorage.removeItem("user_id");
-    localStorage.removeItem("user_email");
+  useEffect(() => {
+    checkAuth().then((data) => setUserEmail(data.email)).catch(() => {});
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:8000"}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {}
     navigate("/auth", { replace: true });
   };
 
@@ -91,21 +97,17 @@ export default function Dashboard() {
   useEffect(() => {
     if (!activeReport || activeReport.status === "completed" || activeReport.status === "failed") return;
 
-    let cancelled = false;
-    const timer = setInterval(async () => {
-      if (cancelled) return;
-      try {
-        const statusData = await getReportStatus(activeReport.id);
-        if (statusData.status === "completed" || statusData.status === "failed") {
+    const eventSource = streamReportStatus(
+      activeReport.id,
+      async (status) => {
+        if (status === "completed" || status === "failed") {
           await loadReport(activeReport.id);
-          clearInterval(timer);
         }
-      } catch {
-        // keep polling
-      }
-    }, STATUS_POLL_INTERVAL);
+      },
+      () => {},
+    );
 
-    return () => { cancelled = true; clearInterval(timer); };
+    return () => eventSource.close();
   }, [activeReport?.id, activeReport?.status]);
 
   useEffect(() => {
@@ -181,14 +183,19 @@ export default function Dashboard() {
     <div className="min-h-screen bg-[#0B0F19] flex">
       <aside className="w-72 border-r border-white/10 flex flex-col bg-white/[0.02]">
         <div className="p-4 border-b border-white/10">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-sm font-bold text-white">
-              {(localStorage.getItem("user_email") || "?")[0].toUpperCase()}
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-sm font-bold text-white">
+                {(userEmail || "?")[0].toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-gray-300 truncate">{userEmail}</p>
+                <p className="text-[10px] text-gray-600">{reports.length} report{reports.length !== 1 ? "s" : ""}</p>
+              </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-gray-300 truncate">{localStorage.getItem("user_email")}</p>
-              <p className="text-[10px] text-gray-600">{reports.length} report{reports.length !== 1 ? "s" : ""}</p>
-            </div>
+            <button onClick={handleLogout} className="text-[10px] text-gray-600 hover:text-gray-300 transition px-2 py-1 rounded hover:bg-white/5">
+              Sign out
+            </button>
           </div>
           <button
             onClick={() => navigate("/")}
@@ -222,11 +229,6 @@ export default function Dashboard() {
               </div>
             </button>
           ))}
-        </div>
-        <div className="p-3 border-t border-white/10">
-          <button onClick={handleLogout} className="w-full text-xs text-gray-600 hover:text-gray-300 py-2 rounded-lg hover:bg-white/5 transition text-center">
-            Sign out
-          </button>
         </div>
       </aside>
 

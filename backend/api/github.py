@@ -39,25 +39,31 @@ async def ingest_github(
     try:
         gh_service = GitHubService(token=token) if token else GitHubService()
         repos = await gh_service.get_repositories(username)
-        chunks = []
+        chunk_texts = []
         metadatas = []
 
         for repo in repos:
             combined = f"Repo: {repo['name']}\nDesc: {repo['description']}\nURL: {repo['url']}\nREADME:\n{repo['readme']}"
 
             for chunk in chunker.chunk_text(combined):
-                chunks.append(chunk)
-                metadatas.append({"source": "github", "repo_name": repo["name"], "repo_url": repo["url"]})
+                chunk_texts.append(chunk["text"])
+                metadatas.append({
+                    "source": "github",
+                    "repo_name": repo["name"],
+                    "repo_url": repo["url"],
+                    "chunk_start": chunk["start"],
+                    "chunk_end": chunk["end"],
+                })
 
-        if not chunks:
+        if not chunk_texts:
             return {"message": "No data"}
 
-        embeddings = embedder.embed_documents(chunks)
-        await vector_store.add_documents(db=db, documents=chunks, embeddings=embeddings, metadatas=metadatas, resume_id=resume_id)
+        embeddings = embedder.embed_documents(chunk_texts)
+        await vector_store.add_documents(db=db, documents=chunk_texts, embeddings=embeddings, metadatas=metadatas, resume_id=resume_id)
         await db.commit()
 
-        logger.info(f"GitHub ingest: {len(repos)} repos, {len(chunks)} chunks for {username}")
-        return {"repos": len(repos), "chunks": len(chunks)}
+        logger.info(f"GitHub ingest: {len(repos)} repos, {len(chunk_texts)} chunks for {username}")
+        return {"repos": len(repos), "chunks": len(chunk_texts)}
     except HTTPException:
         raise
     except Exception as e:

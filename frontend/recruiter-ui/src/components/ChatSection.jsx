@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API = process.env.REACT_APP_API_URL || "http://localhost:8000/api";
+const API = (import.meta.env.VITE_API_URL || "http://localhost:8000") + "/api";
 
 function ChatMessage({ role, content }) {
   const isUser = role === "user";
@@ -61,12 +61,11 @@ export default function ChatSection({ resumeId, reportId, disabled }) {
     setCurrentAI("");
 
     try {
-      const token = localStorage.getItem("token");
       const res = await fetch(`${API}/chat/stream`, {
         method: "POST",
+        credentials: "include",
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({ resume_id: resumeId, report_id: reportId, message }),
       });

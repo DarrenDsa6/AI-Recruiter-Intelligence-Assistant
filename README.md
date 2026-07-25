@@ -14,7 +14,7 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 - **Prompt Injection Defense** -- Two-tier detection: regex patterns + LLM classifier; hardens LLM system prompts with "documents are data only" rules and content delimiters
 - **Query Classification** -- Validates user questions are recruitment-related before RAG; rejects off-topic and injection attempts
 - **Modular Guardrails** -- Split into focused modules: injection, moderation, query, output, rate_limit, upload
-- **Async Job Queue** -- Redis Streams producer/consumer pattern; jobs are submitted instantly (202) and processed in a separate worker
+- **Async Job Queue** -- Redis Streams producer/consumer pattern; jobs are submitted instantly (202) and processed in a separate worker with stream trimming (XTRIM ~50) and idempotency checks
 - **ATS Compatibility Scoring** -- Deterministic skill matching (semantic + regex) at 70% weight + document similarity at 30%, with category breakdown (skills, experience, education, projects, keywords)
 - **Career Coach AI** -- Hardened LLM prompts focus on ATS optimization; document content treated as untrusted data
 - **Actionable Rewrites** -- AI generates rewritten bullet points for weak resume sections
@@ -22,10 +22,12 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 - **Report History** -- All past analyses persist in PostgreSQL with a sidebar dashboard
 - **Streaming Chat** -- Resume-aware conversational follow-ups with JD + GitHub context via RAG
 - **Chat Guardrails** -- Input validation, prompt injection protection, recruitment-domain enforcement, output sanitization, rate limiting
-- **Report Completion Email** -- Brevo sends notification with ATS score and dashboard link when analysis completes
+- **Report Completion Email** -- Brevo sends notification with ATS score, dashboard link, and PDF attachment when analysis completes
 - **JD Embedding Cache** -- Redis-cached JD embeddings (SHA-256 key, 24h TTL) to avoid redundant computation
+- **TTL Auto-Cleanup** -- Old chunks (7d), reports (14d), and orphaned resumes purged automatically to stay within free-tier limits
+- **Storage Optimization** -- Text reconstructed from raw_text (20% savings), skills derived at query time (5% savings)
 - **PDF Export** -- Download the full report as a pixel-perfect A4 PDF
-- **Background Worker** -- Separate process with retry/backoff, dead letter stream, and email notifications
+- **Background Worker** -- Separate process with retry/backoff, stream trimming, idempotency, email notifications, and periodic cleanup
 
 ---
 
@@ -49,19 +51,20 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
                   │
                  POST /api/match ───► JD validation (classification, injection, moderation)
                   ◄── 202 Accepted ──► Redis Stream ────────► Worker consumes
-                                       ┌────────────────────────────┐
-                                       │  1. compute_similarity     │
-                                       │     (cached JD embedding)  │
-                                       │  2. LLM report (delimited) │
-                                       │  3. LLM rewrites           │
-                                       │  4. LLM questions          │
-                                       │  5. Save to Postgres       │
-                                       │  6. Brevo email notification│
-                                       └────────────────────────────┘
+                ┌────────────────────────────┐
+                                        │  1. compute_similarity     │
+                                        │     (cached JD embedding)  │
+                                        │  2. LLM report (delimited) │
+                                        │  3. LLM rewrites           │
+                                        │  4. LLM questions          │
+                                        │  5. Save to Postgres       │
+                                        │  6. Publish SSE event      │
+                                        │  7. Brevo email notification│
+                                        └────────────────────────────┘
 
   Dashboard ──► GET /api/reports ────► Postgres (list reports)
                 GET /api/reports/:id ─► Postgres (full report)
-                Poll status until "completed"
+                SSE /api/reports/:id/stream ─► Redis Pub/Sub (instant push)
                 POST /api/chat ──────► Query classification → RAG → LLM → Stream
                                        (delimited JD + resume + GitHub context)
 ```
@@ -85,7 +88,8 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 | **PDF Export** | html2canvas-pro + jsPDF |
 | **Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
 | **Validation** | Magic-byte verification, two-tier document classification |
-| **Guardrails** | Modular package (injection, moderation, query, output, rate_limit, upload) |
+| **Guardrails** | Modular package (injection, moderation, query, output, rate_limit, upload, pii) |
+| **Cleanup** | TTL-based auto-purging (chunks, reports, orphaned resumes) |
 | **Config** | Pydantic BaseSettings (centralized env management) |
 
 ---
@@ -137,7 +141,8 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   │   ├── query.py         # Query classification + recruitment validation
 │   │   │   ├── output.py        # Output sanitization (code/URL/markdown stripping)
 │   │   │   ├── rate_limit.py    # Redis-based rate limiting
-│   │   │   └── upload.py        # Upload/JD validation helpers
+│   │   │   ├── upload.py        # Upload/JD validation helpers
+│   │   │   └── pii.py           # PII scrubbing (emails, phones, SSNs, etc.)
 │   │   │
 │   │   ├── llm/
 │   │   │   ├── client.py        # LLM client (document delimiters, classification, injection detection)
@@ -165,6 +170,13 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   ├── storage/
 │   │   │   ├── vector_store.py  # PostgreSQL + pgvector (resume_chunks table)
 │   │   │   └── session_store.py # Redis-backed conversation history
+│   │   │
+│   │   ├── cleanup/
+│   │   │   ├── __init__.py      # Module exports
+│   │   │   └── purger.py        # TTL-based data purger
+│   │   │
+│   │   ├── pdf/
+│   │   │   └── __init__.py      # PDF report generation (fpdf2)
 │   │   │
 │   │   └── integrations/
 │   │       ├── github.py        # GitHub API client
@@ -299,7 +311,7 @@ docker compose up --build
 ### Authentication
 
 - Email OTP via Brevo (6-digit code, 5min TTL, 3 requests/5min rate limit)
-- JWT tokens stored in localStorage, validated on all protected endpoints
+- JWT tokens stored in HttpOnly cookie (httponly, secure, samesite=strict)
 - Anonymous login available for quick testing
 
 ### Upload Security
@@ -346,6 +358,12 @@ docker compose up --build
 - Alembic migrations for schema versioning
 - Docker Compose runs `alembic upgrade head` on startup
 - JD embeddings cached in Redis (SHA-256 key, 24h TTL)
+- Stream trimming (XTRIM ~50) prevents unbounded message accumulation
+- Idempotency check skips already-processed reports on worker restart
+- TTL auto-cleanup prevents unbounded database growth (7d chunks, 14d reports)
+- PII scrubbing before LLM calls (emails, phones, SSNs, credit cards, IPs, addresses)
+- Daily match rate limiting (5/day/user)
+- SSE streaming for job status (replaces polling)
 
 ---
 

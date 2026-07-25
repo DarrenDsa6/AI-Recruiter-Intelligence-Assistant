@@ -21,6 +21,8 @@ class LLMClient:
         self._client = AsyncOpenAI(
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
+            timeout=120.0,
+            max_retries=2,
         )
         self.model = settings.llm_model
 
@@ -149,14 +151,18 @@ Return ONLY JSON:
     async def _call(self, prompt, system=None):
         if system is None:
             system = SYSTEM_PROMPT
-        response = await self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-        )
+        try:
+            response = await self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+            )
+        except Exception as e:
+            logger.error(f"LLM API call failed: {type(e).__name__}: {e}")
+            raise
 
         text = response.choices[0].message.content
         cleaned = text.replace("```json", "").replace("```", "").strip()

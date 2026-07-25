@@ -2,7 +2,7 @@ import logging
 import random
 import string
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +13,7 @@ from services.redis import get_redis
 from services.integrations.brevo import brevo_email
 from models.user import User
 from schemas.auth import AuthResponse, RequestOTPRequest, VerifyOTPRequest, MessageResponse
-from config.constants import RATE_LIMIT_WINDOW_SECONDS
+from config.constants import RATE_LIMIT_WINDOW_SECONDS, JWT_TOKEN_TTL_SECONDS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -59,6 +59,7 @@ async def request_otp(
 @router.post("/auth/verify-otp", response_model=AuthResponse)
 async def verify_otp(
     body: VerifyOTPRequest,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     redis = await get_redis()
@@ -87,11 +88,20 @@ async def verify_otp(
         logger.info(f"Existing user logged in: {body.email}")
 
     token = create_access_token(str(user.id), user.email)
+    response.set_cookie(
+        key="auth_token",
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=JWT_TOKEN_TTL_SECONDS,
+        path="/",
+    )
     return AuthResponse(token=token, user_id=user.id, email=user.email)
 
 
 @router.post("/auth/anonymous", response_model=AuthResponse)
-async def anonymous_login(db: AsyncSession = Depends(get_db)):
+async def anonymous_login(response: Response, db: AsyncSession = Depends(get_db)):
     import uuid
 
     email = f"anon-{uuid.uuid4().hex[:12]}@local.dev"
@@ -102,6 +112,30 @@ async def anonymous_login(db: AsyncSession = Depends(get_db)):
     await db.refresh(user)
 
     token = create_access_token(str(user.id), user.email)
+    response.set_cookie(
+        key="auth_token",
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=JWT_TOKEN_TTL_SECONDS,
+        path="/",
+    )
     logger.info(f"Anonymous user created: {user.email}")
 
     return AuthResponse(token=token, user_id=user.id, email=user.email)
+
+
+@router.get("/auth/me")
+async def get_me(user_id=Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return {"user_id": user.id, "email": user.email}
+
+
+@router.post("/auth/logout")
+async def logout(response: Response):
+    response.delete_cookie("auth_token", path="/")
+    return {"message": "Logged out"}

@@ -1,3 +1,4 @@
+import base64
 import logging
 from string import Template
 
@@ -83,6 +84,7 @@ class BrevoEmailService:
         score: float,
         report_id: str,
         dashboard_url: str,
+        pdf_bytes: bytes = None,
     ) -> bool:
         subject = REPORT_EMAIL_SUBJECT.substitute(score=score)
         payload = {
@@ -93,6 +95,14 @@ class BrevoEmailService:
                 score=score, dashboard_url=dashboard_url
             ),
         }
+        if pdf_bytes:
+            encoded = base64.b64encode(pdf_bytes).decode("utf-8")
+            payload["attachment"] = [
+                {
+                    "name": f"resume-analysis-{report_id}.pdf",
+                    "content": encoded,
+                }
+            ]
         return await self._send(payload, to_email, "report notification")
 
     async def _send(self, payload: dict, to_email: str, label: str) -> bool:

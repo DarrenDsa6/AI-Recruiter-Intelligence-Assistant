@@ -35,7 +35,7 @@ async def chat_stream(
         return ErrorResponse(error=error)
 
     redis = await get_redis()
-    session_key = f"chat:{user_id}:{request.resume_id}"
+    session_key = f"chat:{user_id}:{resume_id}"
     rate_error = await check_rate_limit(redis, session_key)
     if rate_error:
         return ErrorResponse(error=rate_error)
@@ -50,7 +50,9 @@ async def chat_stream(
     if not report:
         return ErrorResponse(error="Report not found")
 
-    stored_data = await vector_store.get_by_resume(db, str(request.resume_id))
+    resume_id = request.resume_id or report.resume_id
+
+    stored_data = await vector_store.get_by_resume(db, str(resume_id))
     if not stored_data or not stored_data.get("documents"):
         return ErrorResponse(error="Resume not found")
 
@@ -61,7 +63,7 @@ async def chat_stream(
     history = await session_store.get_conversation_history(session_key)
 
     query_embedding = embedder.embed_documents([request.message])[0]
-    rag_results = await vector_store.query_by_resume(db, str(request.resume_id), query_embedding, top_k=5)
+    rag_results = await vector_store.query_by_resume(db, str(resume_id), query_embedding, top_k=5)
 
     rag_docs = []
     if rag_results and rag_results.get("documents") and rag_results["documents"][0]:

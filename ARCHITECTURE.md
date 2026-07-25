@@ -27,11 +27,10 @@ POST /api/auth/verify-otp
         │
         ├── Compare against Redis key
         ├── Upsert user in PostgreSQL
-        └── Return JWT token
+        └── Set HttpOnly, Secure, SameSite=Strict cookie containing JWT
         │
         ▼
-Frontend stores JWT in localStorage
-All subsequent requests include Authorization: Bearer <jwt>
+Frontend relies on browser to automatically attach cookie to subsequent requests
 ```
 
 ### 2. Resume Upload (with Security Layers)
@@ -48,7 +47,7 @@ POST /api/upload (authenticated)
         │     └── Extension validation (.pdf, .docx only)
         │
         ├── LAYER 2: Text Extraction & Validation
-        │     ├── Parse PDF (PyMuPDF) or DOCX (python-docx)
+        │     ├── Layout-aware Parse PDF (PyMuPDF blocks) to preserve multi-column flow
         │     ├── Page count check (max 30 pages for PDF)
         │     └── Text length check (max 50,000 characters)
         │
@@ -76,6 +75,7 @@ POST /api/match (authenticated)
         │
         ├── JD Validation
         │     ├── Length check (max 50,000 characters)
+        │     ├── Rate limit: max 5 tailoring jobs per user per day
         │     ├── Document classification (must be "jd", not "resume" or "other")
         │     ├── Prompt injection scan (regex + LLM)
         │     └── Content moderation scan
@@ -101,15 +101,21 @@ POST /api/match (authenticated)
 ```
 Worker starts, connects to Redis + PostgreSQL
         │
+        ├── Trim stale stream entries (XTRIM MAXLEN ~50)
+        │
         ▼
-XREADGROUP from "tailoring-jobs" (blocks 5s)
+XREAD from "tailoring-jobs" (polls every 10s)
         │
         ▼
 process_job(payload):
         │
+        ├── Idempotency check: skip if report status is already "completed" or "failed"
+        │
         ├── Update report status → "processing"
         │
         ├── Pull resume chunks + embeddings from PostgreSQL (resume_chunks table)
+        │
+        ├── PII Scrubber: mask phone numbers, emails, and addresses via regex before sending to NVIDIA API
         │
         ├── matcher.compute_similarity(chunks, jd, redis)
         │     ├── Extract JD skills (regex + classifier)
@@ -129,13 +135,16 @@ process_job(payload):
         │
         ├── Save all results to PostgreSQL (status → "completed")
         │
-        ├── Send email via Brevo (score + dashboard link)
+        ├── Publish to Redis Pub/Sub channel "report:{report_id}" (instant SSE push)
         │
-        └── XACK message from Redis Stream
+        ├── Send email via Brevo (score + dashboard link + PDF)
+        │
+        └── XTRIM stream (maxlen ~50)
 
     On failure:
-        ├── Retry with exponential backoff (3 attempts: 1s, 2s, 4s)
-        └── Dead letter stream after all retries exhausted
+        ├── Publish failed status to Redis Pub/Sub channel
+        ├── Retry with re-enqueue (max 3 attempts per report)
+        └── Idempotency prevents duplicate processing on restart
 ```
 
 ### 5. Report Retrieval
@@ -145,18 +154,19 @@ Dashboard mounts → GET /api/reports
         │
         └── List all reports for authenticated user (PostgreSQL)
 
-Dashboard polls → GET /api/reports/:report_id
+Dashboard connects via SSE → GET /api/reports/:report_id/stream
         │
-        ├── status == "pending" / "processing" → show spinner, keep polling (3s)
-        ├── status == "failed" → show error
-        └── status == "completed" → render full results:
-              ├── ATS Compatibility Score (SVG ring gauge)
-              ├── Category Breakdown (skills, experience, education, projects, keywords)
-              ├── Summary
-              ├── Strengths / Gaps / Recommendations
-              ├── Actionable Rewrites (rewritten bullets)
-              ├── Interview Questions (gap-focused)
-              └── Career Coach Chat (RAG over resume + JD + GitHub)
+        ├── FastAPI listens to Redis Pub/Sub channel "report_completed:{report_id}"
+        ├── Status pushed instantly to client upon worker completion
+        ├── status == "completed" → render full results:
+        │     ├── ATS Compatibility Score (SVG ring gauge)
+        │     ├── Category Breakdown (skills, experience, education, projects, keywords)
+        │     ├── Summary
+        │     ├── Strengths / Gaps / Recommendations
+        │     ├── Actionable Rewrites (rewritten bullets)
+        │     ├── Interview Questions (gap-focused)
+        │     └── Career Coach Chat (RAG over resume + JD + GitHub)
+        └── status == "failed" → show error
 ```
 
 ### 6. Follow-Up Chat (with Query Classification + Guardrails)
@@ -217,7 +227,8 @@ Upload Flow:                          Chat Flow:
 JD Submission:                           (code/URL/markdown stripping)
 4. JD validation
    (classification, injection
-    [regex+LLM], content moderation)
+    [regex+LLM], content moderation,
+    rate limit: 5/day/user)
 ```
 
 ---
@@ -232,7 +243,8 @@ services/guardrails/
 ├── query.py           # Query classification + recruitment validation
 ├── output.py          # Output sanitization (code/URL/markdown stripping)
 ├── rate_limit.py      # Redis-based rate limiting
-└── upload.py          # Upload/JD validation helpers
+├── upload.py          # Upload/JD validation helpers
+└── pii.py             # PII scrubbing (emails, phones, SSNs, credit cards, IPs, addresses)
 ```
 
 Each module is focused and independently testable. The `__init__.py` re-exports everything so existing `from services.guardrails import ...` imports continue to work.
@@ -253,18 +265,20 @@ Each module is focused and independently testable. The `__init__.py` re-exports 
                             │ created_at     TIMESTAMPTZ│
                             └──────────┬───────────────┘
                                        │
-                            ┌──────────▼───────────────┐
-                            │     resume_chunks         │
-                            │    (pgvector enabled)     │
-                            ├──────────────────────────┤
-                            │ id           UUID PK      │
-                            │ resume_id    UUID FK      │
-                            │ chunk_index  INT          │
-                            │ text         TEXT         │
-                            │ embedding    Vector(384)  │
-                            │ skills       TEXT         │
-                            │ created_at   TIMESTAMPTZ  │
-                            └──────────────────────────┘
+                             ┌──────────▼───────────────┐
+                             │     resume_chunks         │
+                             │    (pgvector enabled)     │
+                             ├──────────────────────────┤
+                             │ id              UUID PK   │
+                             │ resume_id       UUID FK   │
+                             │ chunk_index     INT       │
+                             │ chunk_start_char INT      │
+                             │ chunk_end_char   INT      │
+                             │ text            TEXT      │
+                             │ embedding       Vector(384)│
+                             │ skills          TEXT      │
+                             │ created_at      TIMESTAMPTZ│
+                             └──────────────────────────┘
 
 ┌──────────────────────────┐
 │     tailoring_reports     │
@@ -309,7 +323,7 @@ Category Breakdown:
 |-------|-----------|
 | **Frontend** | React 19, React Router 7, Tailwind CSS 3 |
 | **Backend** | FastAPI, Python 3.11, Uvicorn |
-| **Auth** | Email OTP (Redis + Brevo) + JWT (PyJWT) |
+| **Auth** | Email OTP (Redis + Brevo) + JWT in HttpOnly cookie |
 | **Queue** | Redis Streams (Upstash) |
 | **Database + Vectors** | PostgreSQL + pgvector (Supabase) via SQLAlchemy + asyncpg |
 | **Migrations** | Alembic + standalone SQL scripts |
@@ -319,7 +333,7 @@ Category Breakdown:
 | **Email** | Brevo (SMTP API via httpx) |
 | **Metrics** | Prometheus (prometheus-fastapi-instrumentator) |
 | **PDF Export** | html2canvas-pro + jsPDF |
-| **Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
+| **Parsing** | PyMuPDF (layout-aware blocks), python-docx (DOCX) |
 | **File Validation** | Magic-byte verification, two-tier document classification |
 | **Guardrails** | Modular package (injection, moderation, query, output, rate_limit, upload) |
 
@@ -344,6 +358,7 @@ Category Breakdown:
 | **Injection scan** | Same two-tier detection as uploads |
 | **Content moderation** | Same moderation scan as uploads |
 | **Length limit** | 50,000 characters maximum |
+| **Rate limit** | Max 5 tailoring jobs per user per day |
 
 ### Chat Guardrails (3 layers)
 
@@ -377,13 +392,44 @@ Category Breakdown:
 
 ---
 
+## Storage Optimization
+
+### TTL-Based Auto-Cleanup
+
+The worker runs periodic cleanup every 100 stream polls (~17 minutes) to prevent unbounded growth:
+
+```
+Worker loop (xread every 10s)
+        │
+        ├── poll_count++
+        ├── if poll_count >= 100:
+        │     ├── Purge chunks older than 7 days (CHUNK_RETENTION_DAYS)
+        │     ├── Purge completed/failed reports older than 14 days (REPORT_RETENTION_DAYS)
+        │     └── Purge orphaned resumes (no chunks + no reports)
+        └── Reset counter
+```
+
+Constants in `config/constants.py`:
+- `CHUNK_RETENTION_DAYS = 7` -- embeddings auto-deleted after 7 days
+- `REPORT_RETENTION_DAYS = 14` -- reports auto-deleted after 14 days
+
+### Text Reconstruction
+
+New resume chunks store `chunk_start_char` and `chunk_end_char` instead of the full text. On read, text is reconstructed by slicing `master_resumes.raw_text[start:end]`. This makes slices immune to future config changes (CHUNK_SIZE/CHUNK_OVERLAP) and saves ~20% storage per chunk. GitHub chunks retain their text since it cannot be reconstructed from resume raw_text.
+
+### Skill Derivation
+
+New chunks store `skills = NULL`. Skills are derived at query time via `SkillExtractionService.extract_skills(text)`. This saves ~5% storage per chunk and avoids duplicating the same skill string across all chunks from the same resume.
+
+---
+
 ## Key Design Decisions
 
 1. **Single database for everything.** PostgreSQL stores users, resumes, report metadata, AND vector embeddings via pgvector. No external vector DB to manage.
 
 2. **Candidate-facing, not recruiter-facing.** The UX is designed for job seekers optimizing their own resumes. LLM prompts frame feedback as a career coach, not a gatekeeper.
 
-3. **Async job queue via Redis Streams.** Jobs are submitted instantly (202 Accepted) and processed in a separate worker. This decouples the API from slow LLM calls and allows the worker to scale independently.
+3. **Async job queue via Redis Streams.** Jobs are submitted instantly (202 Accepted) and processed in a separate worker. Stream trimmed to ~50 entries. Idempotency check skips already-processed reports on restart.
 
 4. **Resume_id keying with SHA-256 dedup.** Embeddings are keyed by resume_id (not session_id). If a user uploads the same PDF again, the existing embeddings are reused -- no re-processing.
 
@@ -395,7 +441,7 @@ Category Breakdown:
 
 8. **Centralized config via Pydantic BaseSettings.** All environment variables managed in `config/settings.py`. No scattered `os.environ` calls.
 
-9. **Modular guardrails.** Split into focused modules (injection, moderation, query, output, rate_limit, upload) for maintainability and testability.
+9. **Modular guardrails.** Split into focused modules (injection, moderation, query, output, rate_limit, upload, pii) for maintainability and testability.
 
 10. **Two-tier injection detection.** Regex catches obvious patterns instantly; LLM classifier catches subtle/obfuscated attacks. Neither alone is sufficient.
 
@@ -407,29 +453,40 @@ Category Breakdown:
 
 14. **pgvector cosine search.** Vector similarity queries use pgvector's `<=>` operator, keeping everything in SQL with no external dependencies.
 
+15. **TTL auto-cleanup.** Worker periodically purges old chunks (7d), reports (14d), and orphaned resumes to stay within free-tier database limits.
+
 ---
 
 ## Production Features
 
 - PostgreSQL + pgvector for data AND embeddings (single DB)
 - Redis-backed session store (survives restarts, auto-expires)
-- Redis Streams for async job processing with consumer groups
+- Redis Streams for async job processing with xread (no consumer groups)
+- Stream trimming (XTRIM MAXLEN ~50) prevents unbounded message accumulation
+- Idempotency check prevents duplicate processing on worker restart
 - Email OTP + report notifications via Brevo
-- JWT authentication with rate limiting
+- JWT in HttpOnly cookie (httponly, secure, samesite=strict)
 - SHA-256 resume deduplication
 - JD embedding caching (Redis, SHA-256 key, 24h TTL)
+- TTL auto-cleanup (7d chunks, 14d reports, orphaned resumes)
+- Text reconstruction via chunk_start_char/chunk_end_char (immune to config changes)
+- Skill derivation at query time (5% storage savings)
+- PII scrubbing before LLM calls (emails, phones, addresses)
+- SSE streaming for job status (instant push, no polling)
+- Layout-aware PDF parsing (preserves multi-column flow)
+- Daily match rate limiting (5/day/user)
 - Prometheus metrics (request latency, error rates, throughput)
 - Health check endpoint with DB + Redis connectivity checks
 - Graceful shutdown (DB pool, Redis connections)
 - Retry with exponential backoff in worker (3 attempts)
 - Dead letter stream for failed jobs
 - Multi-layer upload security (validation, two-tier classification, two-tier injection, moderation)
-- JD validation (two-tier classification, injection, moderation)
+- JD validation (two-tier classification, injection, moderation, rate limiting)
 - Chat guardrails (query classification, two-tier injection, output sanitization)
 - Rate limiting on chat (50 msgs/session/hour) and OTP (3/5min)
 - Hardened LLM prompts with document delimiters
 - Authorization checks on all resource endpoints
-- Modular guardrails package (6 focused modules)
+- Modular guardrails package (7 focused modules)
 - Explainable scoring with category breakdowns
 - Alembic database migrations
 - Docker Compose for local development (backend + worker + frontend)

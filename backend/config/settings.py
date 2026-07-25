@@ -16,9 +16,6 @@ class Settings(BaseSettings):
     upstash_redis_url: str = Field(default="", alias="UPSTASH_REDIS_REST_URL")
     upstash_redis_token: str = Field(default="", alias="UPSTASH_REDIS_REST_TOKEN")
 
-    resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
-    resend_from_email: str = Field(default="", alias="RESEND_FROM_EMAIL")
-
     brevo_api_key: str = Field(default="", alias="BREVO_API_KEY")
     brevo_from_email: str = Field(default="", alias="BREVO_FROM_EMAIL")
     brevo_from_name: str = Field(default="AI Resume Tailor", alias="BREVO_FROM_NAME")
