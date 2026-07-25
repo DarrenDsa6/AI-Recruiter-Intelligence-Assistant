@@ -43,3 +43,10 @@ Set `VITE_API_URL` in `.env` to point to the backend (default: `http://localhost
 - `uploadResume(file)` / `startMatch(resumeId, jdText)`
 - `fetchReports()` / `fetchReport(reportId)`
 - Streaming chat via `POST /api/chat/stream`
+
+## Upload Response Types
+
+The upload endpoint returns different response types based on validation:
+- `UploadResponse` -- Successful upload with resume_id and skills
+- `UploadDuplicateResponse` -- Same file already uploaded (deduplicated)
+- `UploadRejectResponse` -- Document rejected (invalid type, not a resume, unsafe content, etc.)

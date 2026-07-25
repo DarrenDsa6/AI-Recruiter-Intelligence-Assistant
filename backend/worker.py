@@ -23,7 +23,7 @@ logger = logging.getLogger("worker")
 CONSUMER_NAME = f"worker-{os.getpid()}"
 
 
-async def process_job(payload: dict, db):
+async def process_job(payload: dict, db, redis):
     report_id = payload["report_id"]
 
     logger.info(f"Processing job: report={report_id}")
@@ -34,7 +34,7 @@ async def process_job(payload: dict, db):
     await db.commit()
 
     try:
-        match_result = await matcher.compute_similarity(db, payload["jd_text"], payload["resume_id"])
+        match_result = await matcher.compute_similarity(db, payload["jd_text"], payload["resume_id"], redis=redis)
         logger.info(f"Match score: {match_result.get('final_score')}%")
 
         resume_text = await vector_store.get_resume_text(db, payload["resume_id"])
@@ -109,7 +109,7 @@ async def main():
 
                     try:
                         async with async_session_factory() as db:
-                            await process_job(payload, db)
+                            await process_job(payload, db, redis)
                         await redis.xack(WORKER_STREAM_NAME, WORKER_CONSUMER_GROUP, msg_id)
                     except Exception as e:
                         logger.error(f"Attempt {retries + 1} failed: {e}")

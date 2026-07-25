@@ -2,17 +2,24 @@ import hashlib
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.dependencies import get_current_user
 from services.database import get_db
 from services.parsing import ParserService, ChunkerService, SkillExtractionService
+from services.parsing.validator import (
+    verify_file_type,
+    validate_file_size,
+    validate_text_length,
+)
+from services.parsing.classifier import classify_document
+from services.guardrails import validate_upload
 from services.embedding import embedder
 from services.storage import vector_store
 from models.resume import MasterResume
-from schemas.upload import UploadResponse, UploadDuplicateResponse
+from schemas.upload import UploadResponse, UploadDuplicateResponse, UploadRejectResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,6 +41,10 @@ async def upload_document(
 ):
     try:
         content = await file.read()
+
+        validate_file_size(content)
+        file_ext = verify_file_type(content, file.filename or "")
+
         file_hash = _hash_file(content)
 
         result = await db.execute(
@@ -51,16 +62,41 @@ async def upload_document(
                 message="Resume already uploaded.",
             )
 
-        text = parser.parse_file(file_bytes=content, filename=file.filename)
+        text = parser.parse_file(file_bytes=content, filename=file.filename or "")
+        text = validate_text_length(text)
+
+        classification = await classify_document(text)
+        logger.info(
+            f"Document classified as {classification.doc_type} "
+            f"(confidence={classification.confidence:.2f}, tier={classification.tier}): "
+            f"{file.filename}"
+        )
+        if classification.doc_type == "other":
+            logger.warning(f"Rejected document (not resume or JD): user={user_id}, file={file.filename}")
+            return UploadRejectResponse(
+                reason="Document could not be classified as a resume or job description. Please upload a valid resume.",
+                filename=file.filename,
+            )
+
+        guardrail_error = validate_upload(text, file.filename, user_id)
+        if guardrail_error:
+            return UploadRejectResponse(reason=guardrail_error, filename=file.filename)
+
         resume_skills = skill_extractor.extract_skills(text)
         chunks = chunker.chunk_text(text)
 
         if not chunks:
-            raise HTTPException(status_code=400, detail="Chunking failed")
+            return UploadRejectResponse(
+                reason="Could not extract meaningful content from the document.",
+                filename=file.filename,
+            )
 
         embeddings = embedder.embed_documents(chunks)
         if not embeddings:
-            raise HTTPException(status_code=400, detail="Embedding failed")
+            return UploadRejectResponse(
+                reason="Failed to generate embeddings for the document.",
+                filename=file.filename,
+            )
 
         resume = MasterResume(
             user_id=user_id,
@@ -86,4 +122,4 @@ async def upload_document(
 
     except Exception as e:
         logger.error(f"Upload failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise

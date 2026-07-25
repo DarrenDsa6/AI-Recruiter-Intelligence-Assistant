@@ -1,15 +1,20 @@
 import tempfile
 import os
+import logging
 
 import fitz
 from docx import Document
 
+from services.parsing.validator import validate_page_count
+
+logger = logging.getLogger(__name__)
+
 
 class ParserService:
     def parse_file(self, file_bytes: bytes, filename: str) -> str:
-        if filename.endswith(".pdf"):
+        if filename.lower().endswith(".pdf"):
             return self._parse_pdf(file_bytes)
-        elif filename.endswith(".docx"):
+        elif filename.lower().endswith(".docx"):
             return self._parse_docx(file_bytes)
         raise ValueError("Unsupported file type")
 
@@ -21,6 +26,7 @@ class ParserService:
                 tmp.write(file_bytes)
                 temp_path = tmp.name
             doc = fitz.open(temp_path)
+            validate_page_count(doc)
             return "".join(page.get_text() for page in doc)
         finally:
             if doc:

@@ -11,9 +11,11 @@ from core.dependencies import get_current_user
 from services.database import get_db
 from services.redis import get_redis
 from services.llm import llm_client
+from services.llm.prompts import CHAT_SYSTEM_PROMPT_TEMPLATE
+from services.llm.client import DOC_DELIM_START, DOC_DELIM_END
 from services.embedding import embedder
 from services.storage import vector_store, session_store
-from services import guardrails
+from services.guardrails import validate_message, check_rate_limit, sanitize_output
 from models.report import TailoringReport
 from schemas.chat import ChatRequest
 from schemas.common import ErrorResponse
@@ -28,13 +30,13 @@ async def chat_stream(
     user_id: UUID = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    error = guardrails.validate_message(request.message)
+    error = await validate_message(request.message)
     if error:
         return ErrorResponse(error=error)
 
     redis = await get_redis()
     session_key = f"chat:{user_id}:{request.resume_id}"
-    rate_error = await guardrails.check_rate_limit(redis, session_key)
+    rate_error = await check_rate_limit(redis, session_key)
     if rate_error:
         return ErrorResponse(error=rate_error)
 
@@ -67,26 +69,13 @@ async def chat_stream(
 
     context = "\n\n".join(rag_docs) if rag_docs else all_text
 
-    system_parts = [
-        "You are a career coach helping a candidate understand their resume "
-        "in the context of a specific job application.",
-        "\n## STRICT RULES - follow at all times:",
-        "- ONLY answer questions about: the candidate's resume, the job description, skills, experience, qualifications, interview prep, and career advice.",
-        "- NEVER write code, generate code snippets, or explain programming concepts.",
-        "- NEVER answer general knowledge questions unrelated to the job application.",
-        "- NEVER discuss politics, religion, personal opinions, or any topic outside career coaching.",
-        "- NEVER include URLs or links in your response.",
-        '- If a question is off-topic, respond with: "I can only help with resume and job application questions. Please ask about your resume, skills, or the target role."',
-        "- Keep responses concise and actionable - no fluff.",
-        "- Do not invent information. If something is not in the resume or JD, say so.",
-        "- Do not use markdown code blocks or inline code formatting.",
-    ]
+    system_parts = [CHAT_SYSTEM_PROMPT_TEMPLATE]
 
     if jd_text:
-        system_parts.append(f"\nTarget Job Description:\n{jd_text}")
+        system_parts.append(f"\nTarget Job Description:\n{DOC_DELIM_START}\n{jd_text}\n{DOC_DELIM_END}")
     if github_context:
-        system_parts.append(f"\nGitHub Portfolio Context:\n{github_context}")
-    system_parts.append(f"\nRelevant resume context:\n{context}")
+        system_parts.append(f"\nGitHub Portfolio Context:\n{DOC_DELIM_START}\n{github_context}\n{DOC_DELIM_END}")
+    system_parts.append(f"\nRelevant resume context:\n{DOC_DELIM_START}\n{context}\n{DOC_DELIM_END}")
     system_parts.append(
         "\nAnswer ONLY questions about the resume, job description, and GitHub data above. "
         "Stay strictly within the career coaching domain. "
@@ -106,10 +95,10 @@ async def chat_stream(
             full_content = ""
             async for token in llm_client.stream_chat(messages):
                 full_content += token
-                sanitized = guardrails.sanitize_output(full_content)
+                sanitized = sanitize_output(full_content)
                 yield f"data: {json.dumps({'type': 'text', 'content': sanitized})}\n\n"
 
-            final = guardrails.sanitize_output(full_content)
+            final = sanitize_output(full_content)
             await session_store.add_message(session_key, "assistant", final)
             yield f"data: {json.dumps({'type': 'final', 'result': {'summary': 'Complete'}})}\n\n"
 

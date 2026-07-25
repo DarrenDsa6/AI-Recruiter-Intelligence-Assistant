@@ -12,3 +12,8 @@ class UploadDuplicateResponse(BaseModel):
     resume_id: UUID
     filename: str
     message: str
+
+
+class UploadRejectResponse(BaseModel):
+    reason: str
+    filename: str | None = None

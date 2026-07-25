@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.dependencies import get_current_user
 from services.database import get_db
 from services.redis import get_redis
+from services.parsing.classifier import classify_document
+from services.guardrails import validate_jd_text
 from models.report import TailoringReport
 from models.resume import MasterResume
 from schemas.match import MatchRequest, MatchAccepted
@@ -25,6 +27,26 @@ async def match_job_description(
     user_id: UUID = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    jd_guardrail_error = validate_jd_text(body.jd_text, user_id)
+    if jd_guardrail_error:
+        raise HTTPException(status_code=422, detail=jd_guardrail_error)
+
+    classification = await classify_document(body.jd_text)
+    logger.info(
+        f"JD classified as {classification.doc_type} "
+        f"(confidence={classification.confidence:.2f}, tier={classification.tier})"
+    )
+    if classification.doc_type == "resume":
+        raise HTTPException(
+            status_code=422,
+            detail="The text provided appears to be a resume, not a job description.",
+        )
+    if classification.doc_type == "other":
+        raise HTTPException(
+            status_code=422,
+            detail="The text provided does not appear to be a valid job description.",
+        )
+
     result = await db.execute(
         select(MasterResume).where(
             MasterResume.id == body.resume_id,
