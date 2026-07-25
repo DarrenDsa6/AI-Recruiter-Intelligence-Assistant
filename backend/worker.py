@@ -113,10 +113,10 @@ async def main():
                 CONSUMER_NAME,
                 {WORKER_STREAM_NAME: ">"},
                 count=1,
-                block=5000,
             )
 
             if not entries:
+                await asyncio.sleep(1)
                 continue
 
             for stream_name, messages in entries:
