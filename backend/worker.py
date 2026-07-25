@@ -155,10 +155,10 @@ async def main():
             logger.info(f"Resumed {name} stream from position: {val}")
         else:
             if var_attr == "urgent":
-                LAST_ID_URGENT = "$"
+                LAST_ID_URGENT = "0"
             else:
-                LAST_ID_EMAIL = "$"
-            logger.info(f"No saved position for {name} stream — starting from latest")
+                LAST_ID_EMAIL = "0"
+            logger.info(f"No saved position for {name} stream — starting from beginning")
 
     try:
         await redis.xtrim(WORKER_STREAM_URGENT, maxlen=50)
