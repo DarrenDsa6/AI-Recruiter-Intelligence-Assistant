@@ -24,6 +24,7 @@ async def init_db():
         echo=False,
         pool_size=DB_POOL_SIZE,
         max_overflow=DB_MAX_OVERFLOW,
+        pool_pre_ping=True,
     )
     async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 

@@ -14,8 +14,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("resume_chunks", sa.Column("chunk_start_char", sa.Integer(), nullable=False, server_default="0"))
-    op.add_column("resume_chunks", sa.Column("chunk_end_char", sa.Integer(), nullable=False, server_default="0"))
+    op.add_column("resume_chunks", sa.Column("chunk_start_char", sa.Integer(), server_default=sa.text("0"), nullable=False))
+    op.add_column("resume_chunks", sa.Column("chunk_end_char", sa.Integer(), server_default=sa.text("0"), nullable=False))
     op.alter_column("resume_chunks", "chunk_start_char", server_default=None)
     op.alter_column("resume_chunks", "chunk_end_char", server_default=None)
 
