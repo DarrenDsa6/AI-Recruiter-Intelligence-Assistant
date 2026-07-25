@@ -51,8 +51,6 @@ async def ingest_github(
                     "source": "github",
                     "repo_name": repo["name"],
                     "repo_url": repo["url"],
-                    "chunk_start": chunk["start"],
-                    "chunk_end": chunk["end"],
                 })
 
         if not chunk_texts:

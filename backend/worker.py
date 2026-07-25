@@ -113,12 +113,17 @@ async def process_job(payload: dict, db, redis):
 
     except Exception as e:
         logger.error(f"Job failed: report={report_id}, error={e}")
-        await db.execute(
-            update(TailoringReport)
-            .where(TailoringReport.id == report_id)
-            .values(status="failed", error_message=str(e), completed_at=datetime.now(timezone.utc))
-        )
-        await db.commit()
+        try:
+            await db.rollback()
+            async with db_module.async_session_factory() as fresh_db:
+                await fresh_db.execute(
+                    update(TailoringReport)
+                    .where(TailoringReport.id == report_id)
+                    .values(status="failed", error_message=str(e)[:500], completed_at=datetime.now(timezone.utc))
+                )
+                await fresh_db.commit()
+        except Exception as update_err:
+            logger.error(f"Failed to mark report as failed: {update_err}")
         try:
             await redis.publish(f"report:{report_id}", json.dumps({"status": "failed"}))
         except Exception:

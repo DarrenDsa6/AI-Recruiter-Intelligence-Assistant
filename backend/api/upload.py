@@ -110,8 +110,8 @@ async def upload_document(
         await db.refresh(resume)
 
         metadatas = [
-            {"source": "resume", "skills": ", ".join(resume_skills), "chunk_start": c["start"], "chunk_end": c["end"]}
-            for c in chunk_dicts
+            {"source": "resume", "skills": ", ".join(resume_skills)}
+            for _ in chunk_dicts
         ]
         await vector_store.add_documents(
             db=db,
@@ -122,7 +122,7 @@ async def upload_document(
         )
         await db.commit()
 
-        logger.info(f"Resume {resume.id}: {len(chunks)} chunks stored for {file.filename}")
+        logger.info(f"Resume {resume.id}: {len(chunk_dicts)} chunks stored for {file.filename}")
         return UploadResponse(resume_id=resume.id, filename=file.filename, skills=resume_skills)
 
     except Exception as e:
