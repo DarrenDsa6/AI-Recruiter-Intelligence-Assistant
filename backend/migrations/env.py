@@ -50,10 +50,9 @@ def run_migrations_online() -> None:
         alembic_table_exists = "alembic_version" in existing_tables
 
         if "users" in existing_tables and not alembic_table_exists:
-            logger.info("Tables exist but no alembic_version — stamping at 001, pending migrations will run")
+            logger.info("Tables exist but no alembic_version — stamping at 001")
             connection.execute(text("CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL)"))
             connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('001')"))
-            connection.commit()
 
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
