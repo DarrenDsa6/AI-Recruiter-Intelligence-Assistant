@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
 async function request(path, { method = "GET", body, headers = {} } = {}) {
   const url = `${API_BASE}${path}`;
@@ -55,19 +55,32 @@ export async function fetchReport(reportId) {
 }
 
 export async function chatWithAI(payload) {
-  return request("/api/chat/stream", {
+  const res = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
-    body: payload,
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  return res;
 }
 
 export async function ingestGitHub(resumeId, username, token) {
-  const params = new URLSearchParams();
-  if (token) params.append("token", token);
-  const qs = params.toString() ? `?${params.toString()}` : "";
-  return request(`/api/github/${resumeId}/${encodeURIComponent(username)}${qs}`, {
+  const headers = {};
+  if (token) headers["X-GitHub-Token"] = token;
+  const res = await fetch(`${API_BASE}/api/github/${resumeId}/${encodeURIComponent(username)}`, {
     method: "POST",
+    credentials: "include",
+    headers,
   });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  return res.json();
 }
 
 export async function healthCheck() {

@@ -2,6 +2,7 @@ import json
 import asyncio
 import logging
 import os
+import platform
 import sys
 from datetime import datetime, timezone
 
@@ -27,13 +28,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [wor
 logger = logging.getLogger("worker")
 
 CONSUMER_GROUP = "ai-recruiter"
-CONSUMER_NAME = "worker-1"
+CONSUMER_NAME = f"worker-{platform.node()}-{os.getpid()}"
 CLEANUP_INTERVAL = 100
 WORKER_CONCURRENCY = 3
 
 
 async def process_job(payload: dict, db, redis):
-    report_id = payload["report_id"]
+    report_id = payload.get("report_id")
+    if not report_id:
+        logger.error("Job payload missing 'report_id', skipping")
+        return
 
     result = await db.execute(
         select(TailoringReport.status).where(TailoringReport.id == report_id)
@@ -110,13 +114,14 @@ async def process_job(payload: dict, db, redis):
 
     except Exception as e:
         logger.error(f"Job failed: report={report_id}, error={e}")
+        error_msg = "An internal error occurred during processing."
         try:
             await db.rollback()
             async with db_module.async_session_factory() as fresh_db:
                 await fresh_db.execute(
                     update(TailoringReport)
                     .where(TailoringReport.id == report_id)
-                    .values(status="failed", error_message=str(e)[:500], completed_at=datetime.now(timezone.utc))
+                    .values(status="failed", error_message=error_msg, completed_at=datetime.now(timezone.utc))
                 )
                 await fresh_db.commit()
         except Exception as update_err:
@@ -137,7 +142,9 @@ def parse_payload(data):
     if isinstance(raw_payload, bytes):
         raw_payload = raw_payload.decode("utf-8")
     payload = json.loads(raw_payload)
-    retries = int(data.get("retries", 0))
+    retries = int(payload.get("retries", 0))
+    if "report_id" not in payload:
+        raise ValueError("Payload missing 'report_id'")
     return payload, retries
 
 
@@ -160,9 +167,24 @@ async def recover_pending(redis, stream_name, semaphore, active_tasks, is_urgent
 
         logger.info(f"Found {pending_count} pending entries in {stream_name}")
 
+        pending_detail = await redis.xpending_range(
+            stream_name, CONSUMER_GROUP, min="-", max="+", count=10
+        )
+        if not pending_detail:
+            return
+
+        ids_to_claim = []
+        for entry in pending_detail:
+            msg_id = entry[0] if isinstance(entry, (list, tuple)) else entry.get("message_id")
+            if msg_id:
+                ids_to_claim.append(msg_id)
+
+        if not ids_to_claim:
+            return
+
         claimed = await redis.xclaim(
             stream_name, CONSUMER_GROUP, CONSUMER_NAME,
-            min_idle_time=0, ids=["0-0"]
+            min_idle_time=60000, ids=ids_to_claim
         )
         if not claimed:
             return
@@ -254,7 +276,6 @@ async def main():
                     ))
                     active_tasks.add(task)
                     task.add_done_callback(active_tasks.discard)
-                continue
 
             email_entries = await read_stream(redis, WORKER_STREAM_EMAIL)
             if email_entries:
@@ -268,7 +289,6 @@ async def main():
                     ))
                     active_tasks.add(task)
                     task.add_done_callback(active_tasks.discard)
-                continue
 
             poll_count += 1
             if poll_count >= CLEANUP_INTERVAL:

@@ -3,6 +3,8 @@ from config.constants import CHUNK_SIZE, CHUNK_OVERLAP
 
 class ChunkerService:
     def chunk_text(self, text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[dict]:
+        if overlap >= chunk_size:
+            raise ValueError("overlap must be less than chunk_size")
         chunks = []
         start = 0
         while start < len(text):

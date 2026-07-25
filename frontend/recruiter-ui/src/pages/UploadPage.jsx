@@ -26,7 +26,7 @@ export default function UploadPage() {
 
   const handleLogout = async () => {
     try {
-      await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:8000"}/api/auth/logout`, {
+      await fetch(`${process.env.REACT_APP_API_URL || "http://localhost:8000"}/api/auth/logout`, {
         method: "POST",
         credentials: "include",
       });
@@ -38,7 +38,7 @@ export default function UploadPage() {
     e.preventDefault();
     setDragOver(false);
     const file = e.dataTransfer.files?.[0];
-    if (file && file.type === "application/pdf") {
+    if (file && (file.type === "application/pdf" || file.name?.toLowerCase().endsWith(".docx"))) {
       setResumeFile(file);
       setError("");
     }
@@ -66,7 +66,7 @@ export default function UploadPage() {
       setError(err.message || "Something went wrong");
       setStep(STEPS.INPUT);
     }
-  }, [resumeFile, jdText, githubUsername, sendEmail]);
+  }, [resumeFile, jdText, githubUsername, githubToken, sendEmail]);
 
   return (
     <div className="min-h-screen bg-[#0B0F19] flex items-center justify-center p-4">
@@ -101,7 +101,7 @@ export default function UploadPage() {
           {step === STEPS.INPUT && (
             <div className="space-y-5">
               <div>
-                <label className="text-xs font-medium text-gray-400 mb-2 block">Resume (PDF)</label>
+                <label className="text-xs font-medium text-gray-400 mb-2 block">Resume (PDF or DOCX)</label>
                 <div
                   onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                   onDragLeave={() => setDragOver(false)}
@@ -118,7 +118,7 @@ export default function UploadPage() {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".pdf"
+                    accept=".pdf,.docx"
                     className="hidden"
                     onChange={(e) => {
                       const file = e.target.files?.[0];
@@ -138,7 +138,7 @@ export default function UploadPage() {
                       <svg className="w-8 h-8 text-gray-600 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z" />
                       </svg>
-                      <p className="text-sm text-gray-500">Drop your PDF here or <span className="text-blue-400">browse</span></p>
+                      <p className="text-sm text-gray-500">Drop your PDF or DOCX here or <span className="text-blue-400">browse</span></p>
                       <p className="text-xs text-gray-600 mt-0.5">Max 200 pages</p>
                     </>
                   )}

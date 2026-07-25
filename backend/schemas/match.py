@@ -1,10 +1,10 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from uuid import UUID
 
 
 class MatchRequest(BaseModel):
     resume_id: UUID
-    jd_text: str
+    jd_text: str = Field(..., max_length=50000)
     send_email: bool = False
 
 

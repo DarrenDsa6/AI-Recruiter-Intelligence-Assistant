@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API = (import.meta.env.VITE_API_URL || "http://localhost:8000") + "/api";
+const API = (process.env.REACT_APP_API_URL || "http://localhost:8000") + "/api";
 
 function ChatMessage({ role, content }) {
   const isUser = role === "user";
@@ -51,6 +51,11 @@ export default function ChatSection({ resumeId, reportId, disabled }) {
 
   const bottomRef = useRef(null);
   const inputRef = useRef(null);
+  const abortRef = useRef(null);
+
+  useEffect(() => {
+    return () => { if (abortRef.current) abortRef.current.abort(); };
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -60,6 +65,9 @@ export default function ChatSection({ resumeId, reportId, disabled }) {
     setLoading(true);
     setCurrentAI("");
 
+    const abortController = new AbortController();
+    abortRef.current = abortController;
+
     try {
       const res = await fetch(`${API}/chat/stream`, {
         method: "POST",
@@ -68,6 +76,7 @@ export default function ChatSection({ resumeId, reportId, disabled }) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ resume_id: resumeId, report_id: reportId, message }),
+        signal: abortController.signal,
       });
 
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
@@ -88,20 +97,22 @@ export default function ChatSection({ resumeId, reportId, disabled }) {
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed.startsWith("data:")) continue;
-          const json = trimmed.replace("data:", "").trim();
+          const json = trimmed.slice(5).trim();
           if (!json) continue;
 
           try {
             const parsed = JSON.parse(json);
             if (parsed.type === "text") {
-              fullText += parsed.content;
+              fullText = parsed.content;
               setCurrentAI(fullText);
             }
             if (parsed.type === "error") {
-              fullText += `\n\n**Error:** ${parsed.message}`;
+              fullText = `**Error:** ${parsed.message}`;
               setCurrentAI(fullText);
             }
-          } catch {}
+          } catch (e) {
+            console.warn("SSE parse error:", e.message, "raw:", json);
+          }
         }
       }
 
@@ -110,7 +121,10 @@ export default function ChatSection({ resumeId, reportId, disabled }) {
       }
       setCurrentAI("");
     } catch (err) {
+      if (err.name === "AbortError") { setLoading(false); return; }
       console.error(err);
+      setCurrentAI("");
+      setMessages((prev) => [...prev, { role: "assistant", content: "**Error:** Failed to get response. Please try again." }]);
     }
     setLoading(false);
   }, [resumeId, reportId]);

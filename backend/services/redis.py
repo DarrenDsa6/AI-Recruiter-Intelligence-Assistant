@@ -22,5 +22,9 @@ async def get_redis() -> Redis:
 async def close_redis():
     global _client
     if _client:
+        try:
+            await _client.aclose()
+        except Exception:
+            pass
         _client = None
         logger.info("Redis connection closed")

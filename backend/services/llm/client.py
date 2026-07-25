@@ -164,7 +164,13 @@ Return ONLY JSON:
             logger.error(f"LLM API call failed: {type(e).__name__}: {e}")
             raise
 
+        if not response.choices:
+            logger.error("LLM returned empty choices")
+            return {"error": "LLM returned empty response"}
         text = response.choices[0].message.content
+        if not text:
+            logger.error("LLM returned empty content")
+            return {"error": "LLM returned empty content"}
         cleaned = text.replace("```json", "").replace("```", "").strip()
 
         try:
@@ -176,9 +182,13 @@ Return ONLY JSON:
             return {"raw": text, "cleaned": cleaned, "error": f"JSON parse failed: {e}"}
 
     async def stream_chat(self, messages):
-        response = await self._client.chat.completions.create(
-            model=self.model, messages=messages, temperature=0.2, stream=True
-        )
+        try:
+            response = await self._client.chat.completions.create(
+                model=self.model, messages=messages, temperature=0.2, stream=True
+            )
+        except Exception as e:
+            logger.error(f"LLM stream API call failed: {type(e).__name__}: {e}")
+            raise
         async for chunk in response:
             if not chunk.choices:
                 continue

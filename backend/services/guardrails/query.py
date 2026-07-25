@@ -29,15 +29,12 @@ _recruitment_pattern = re.compile(
 def is_recruitment_related(message: str) -> bool:
     if _recruitment_pattern.search(message):
         return True
-    words = message.lower().split()
-    if len(words) <= 3:
-        return True
     return False
 
 
 def check_off_topic(message: str) -> bool:
     lower = message.lower()
-    return sum(1 for p in OFF_TOPIC_KEYWORDS if re.search(p, lower)) >= 2
+    return sum(1 for p in OFF_TOPIC_KEYWORDS if re.search(p, lower)) >= 1
 
 
 async def validate_message(message: str) -> str | None:

@@ -12,10 +12,10 @@ class EmbedderService:
         self._cache: dict[str, object] = {}
 
     def embed_documents(self, documents: list[str]) -> list[list[float]]:
-        embeddings = self.model.encode(documents)
+        embeddings = self.model.encode(documents, normalize_embeddings=True)
         return embeddings.tolist()
 
-    def get_embeddings(self, texts: list[str]) -> list[object]:
+    def get_embeddings(self, texts: list[str]) -> list[list[float]]:
         embeddings = []
         new_texts = []
         new_keys = []
@@ -23,7 +23,8 @@ class EmbedderService:
         for text in texts:
             key = text.lower().strip()
             if key in self._cache:
-                embeddings.append(self._cache[key])
+                vec = self._cache[key]
+                embeddings.append(vec.tolist() if hasattr(vec, "tolist") else list(vec))
             else:
                 new_texts.append(key)
                 new_keys.append(key)
@@ -37,7 +38,7 @@ class EmbedderService:
                 if embeddings[i] is None:
                     vec = new_vectors[idx]
                     self._cache[new_keys[idx]] = vec
-                    embeddings[i] = vec
+                    embeddings[i] = vec.tolist() if hasattr(vec, "tolist") else list(vec)
                     idx += 1
 
         return embeddings

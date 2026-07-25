@@ -224,7 +224,7 @@ export default function AuthPage() {
                 <button
                   type="button"
                   disabled={countdown > 0}
-                  onClick={() => { setCountdown(60); requestOTP(email); }}
+                  onClick={() => { setCountdown(60); requestOTP(email).catch(() => {}); }}
                   className="text-xs text-blue-400 hover:text-blue-300 transition disabled:text-gray-600 disabled:cursor-not-allowed"
                 >
                   {countdown > 0 ? `Resend in ${countdown}s` : "Resend code"}

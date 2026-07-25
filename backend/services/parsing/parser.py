@@ -44,6 +44,7 @@ class ParserService:
 
     def _parse_docx(self, file_bytes: bytes) -> str:
         temp_path = None
+        doc = None
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
                 tmp.write(file_bytes)
@@ -51,6 +52,11 @@ class ParserService:
             doc = Document(temp_path)
             return "\n".join(para.text for para in doc.paragraphs)
         finally:
+            if doc:
+                try:
+                    doc.element.getparent().remove(doc.element)
+                except Exception:
+                    pass
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.unlink(temp_path)

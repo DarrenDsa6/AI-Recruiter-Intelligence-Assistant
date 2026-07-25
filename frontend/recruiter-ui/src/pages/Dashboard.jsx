@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { fetchReports, fetchReport, chatWithAI, streamReportStatus, checkAuth } from "../services/api";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { fetchReports, fetchReport, streamReportStatus, checkAuth } from "../services/api";
 import GithubSection from "../components/GithubSection";
 
 function ReportSection({ title, color, icon, children, delay }) {
@@ -37,6 +39,7 @@ export default function Dashboard() {
   const [selectedSkill, setSelectedSkill] = useState(null);
   const [userEmail, setUserEmail] = useState("");
   const chatEndRef = useRef(null);
+  const abortRef = useRef(null);
 
   useEffect(() => {
     checkAuth().then((data) => setUserEmail(data.email)).catch(() => {});
@@ -44,7 +47,7 @@ export default function Dashboard() {
 
   const handleLogout = async () => {
     try {
-      await fetch(`${import.meta.env.VITE_API_URL || "http://localhost:8000"}/api/auth/logout`, {
+      await fetch(`${process.env.REACT_APP_API_URL || "http://localhost:8000"}/api/auth/logout`, {
         method: "POST",
         credentials: "include",
       });
@@ -123,23 +126,109 @@ export default function Dashboard() {
     setChatMessages((prev) => [...prev, { role: "user", content: userMsg }]);
     setChatLoading(true);
 
+    const API = (process.env.REACT_APP_API_URL || "http://localhost:8000") + "/api";
+
+    const abortController = new AbortController();
+    abortRef.current = abortController;
+
     try {
-      const data = await chatWithAI({
-        message: userMsg,
-        report_id: activeReport.id,
-        selected_skill: selectedSkill,
-        history: chatMessages.map((m) => ({ role: m.role, content: m.content })),
+      const res = await fetch(`${API}/chat/stream`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resume_id: activeReport.resume_id,
+          report_id: activeReport.id,
+          message: userMsg,
+        }),
+        signal: abortController.signal,
       });
-      setChatMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+
+      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullText = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const json = trimmed.slice(5).trim();
+          if (!json) continue;
+
+          try {
+            const parsed = JSON.parse(json);
+            if (parsed.type === "text") {
+              fullText = parsed.content;
+              setChatMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.role === "assistant" && last.streaming) {
+                  updated[updated.length - 1] = { ...last, content: fullText };
+                } else {
+                  updated.push({ role: "assistant", content: fullText, streaming: true });
+                }
+                return updated;
+              });
+            }
+            if (parsed.type === "error") {
+              fullText = parsed.message;
+              setChatMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.role === "assistant" && last.streaming) {
+                  updated[updated.length - 1] = { ...last, content: `**Error:** ${fullText}` };
+                } else {
+                  updated.push({ role: "assistant", content: `**Error:** ${fullText}`, streaming: true });
+                }
+                return updated;
+              });
+            }
+            if (parsed.type === "final") {
+              setChatMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last && last.role === "assistant" && last.streaming) {
+                  updated[updated.length - 1] = { ...last, streaming: false };
+                }
+                return updated;
+              });
+            }
+          } catch {}
+        }
+      }
+
+      setChatMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last && last.role === "assistant" && last.streaming) {
+          updated[updated.length - 1] = { ...last, streaming: false };
+        }
+        return updated;
+      });
     } catch (err) {
+      if (err.name === "AbortError") return;
       setChatMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `Error: ${err.message}` },
+        { role: "assistant", content: `**Error:** ${err.message || "Failed to get response."}` },
       ]);
     } finally {
       setChatLoading(false);
     }
   };
+
+  useEffect(() => {
+    return () => { if (abortRef.current) abortRef.current.abort(); };
+  }, []);
 
   const formatDate = (iso) => new Date(iso).toLocaleDateString("en-US", {
     month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
@@ -456,7 +545,15 @@ export default function Dashboard() {
                           ? "bg-blue-600/20 text-blue-100 rounded-br-md"
                           : "bg-white/5 text-gray-400 rounded-bl-md"
                       }`}>
-                        {msg.content}
+                        {msg.role === "assistant" ? (
+                          <div className="prose prose-invert prose-sm max-w-none">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {msg.content}
+                            </ReactMarkdown>
+                          </div>
+                        ) : (
+                          msg.content
+                        )}
                       </div>
                     </div>
                   ))}

@@ -34,6 +34,7 @@ async def delete_session(
         raise HTTPException(status_code=404, detail="Resume not found")
 
     deleted = await vector_store.delete_by_resume(db, resume_id)
+    await db.commit()
     await session_store.delete_session(resume_id)
     logger.info(f"Session {resume_id}: deleted {deleted} chunks")
     return {"deleted_chunks": deleted, "session_deleted": True}
@@ -49,6 +50,7 @@ async def end_session(
         raise HTTPException(status_code=404, detail="Resume not found")
 
     deleted = await vector_store.delete_by_resume(db, resume_id)
+    await db.commit()
     await session_store.delete_session(resume_id)
     logger.info(f"Session {resume_id}: ended, deleted {deleted} chunks")
     return {"deleted_chunks": deleted, "session_deleted": True}

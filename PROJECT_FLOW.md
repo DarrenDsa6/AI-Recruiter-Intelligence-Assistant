@@ -124,13 +124,18 @@ The entire analysis runs asynchronously -- the user submits, gets a job ID, and 
 │  │  ├── resume_chunks        ├── match_rate:{user_id}    │   │   │
 │  │  │   (pgvector)           ├── jd_emb:{sha256} (24h)   │   │   │
 │  │  └── tailoring_reports    ├── chat:{user_id}:*         │   │   │
-│  │                          └── tailoring-jobs (Stream)   │   │   │
+│  │                          ├── anon_rate:global (1hr)    │   │   │
+│  │                          ├── chat_rate:* (1hr)         │   │   │
+│  │                          ├── tailoring-jobs:urgent     │   │   │
+│  │                          └── tailoring-jobs:email      │   │   │
 │  └──────────────────────────────────────────────────────┘   │   │
 │                                                              │   │
 │  ┌──────────────────────────────────────────────────────┐   │   │
 │  │              WORKER (separate process)                 │   │   │
 │  │                                                        │   │   │
-│  │  xread("tailoring-jobs")                              │   │   │
+│  │  xreadgroup(consumer-group, consumer-name)             │   │   │
+│  │   ├── tailoring-jobs:urgent (priority)                 │   │   │
+│  │   └── tailoring-jobs:email (email notifications)       │   │   │
 │  │       │                                                │   │   │
 │  │       ▼                                                │   │   │
 │  │  process_job():                                        │   │   │
@@ -141,6 +146,8 @@ The entire analysis runs asynchronously -- the user submits, gets a job ID, and 
 │  │  ├── generate_actionable_rewrites (LLM)                │   │   │
 │  │  ├── save results to PostgreSQL                        │   │   │
 │  │  ├── generate PDF + send email (Brevo)                 │   │   │
+│  │  ├── XACK processed messages                           │   │   │
+│  │  ├── xclaim idle entries (min_idle_time=60s)           │   │   │
 │  │  └── periodic cleanup (every 100 polls)                │   │   │
 │  └──────────────────────────────────────────────────────┘   │   │
 └──────────────────────────────────────────────────────────────┘   │
@@ -165,9 +172,10 @@ The entire analysis runs asynchronously -- the user submits, gets a job ID, and 
    │
    ▼
 2. POST /api/auth/request-otp
+   ├── Normalize email (strip + lowercase)
    ├── Generate 6-digit code
-   ├── Store in Redis: otp:{email} = "123456" (TTL 300s)
-   ├── Rate limit: otp_rate:{email} (max 3 per 5min)
+   ├── Store in Redis: otp:{normalized_email} = "123456" (TTL 300s)
+   ├── Rate limit: atomic INCR + EXPIRE on otp_rate:{normalized_email} (max 3 per 5min)
    └── Send via Brevo SMTP API (HTML email template)
    │
    ▼
@@ -175,7 +183,8 @@ The entire analysis runs asynchronously -- the user submits, gets a job ID, and 
    │
    ▼
 4. POST /api/auth/verify-otp
-   ├── Compare against Redis key
+   ├── Normalize email (strip + lowercase)
+   ├── Compare against Redis key using hmac.compare_digest() (timing-safe)
    ├── Delete OTP from Redis (one-time use)
    ├── Upsert user in PostgreSQL (users table)
    ├── Create JWT: { sub: user_id, email, exp: now+24h }
@@ -184,6 +193,14 @@ The entire analysis runs asynchronously -- the user submits, gets a job ID, and 
    ▼
 5. Browser automatically attaches cookie to all subsequent requests
 ```
+
+### Timing-safe comparison
+
+OTP comparison uses `hmac.compare_digest()` instead of `==` to prevent timing side-channel attacks. Standard string equality leaks information about how many leading characters matched via response time differences.
+
+### Anonymous login
+
+`POST /api/auth/anonymous` creates a throwaway user (`anon-{uuid}@local.dev`). Rate-limited to 5 sessions per hour via an atomic Redis pipeline (`anon_rate:global`). Used for quick demos without email verification.
 
 ### Why HttpOnly cookie instead of localStorage
 
@@ -270,6 +287,10 @@ POST /api/upload (multipart/form-data)
    └── Return { resume_id, filename, skills }
 ```
 
+### GitHub token handling
+
+GitHub personal access tokens are sent via the `X-GitHub-Token` HTTP header (not in the JSON body). The backend reads it with `Header(alias="X-GitHub-Token")` and passes it to the GitHub API client. If no token is provided, public repos are accessed via the unauthenticated API (rate-limited to 60 req/hr).
+
 ### Why chunking
 
 LLMs have context windows. Sending a 10-page resume at once wastes tokens and loses focus. Chunking allows:
@@ -301,8 +322,7 @@ POST /api/match (authenticated)
    │
    ├── JD Validation
    │   ├── Length check (max 50,000 characters)
-   │   ├── Rate limit: max 5 tailoring jobs per user per day
-   │   │   └── Redis key: match_rate:{user_id} (TTL 86400s)
+   │   ├── Rate limit: atomic INCR + EXPIRE on match_rate:{user_id} (max 5 per day)
    │   ├── Document classification (must be "jd")
    │   │   └── Rejects if classified as "resume" with confidence >= 0.85
    │   ├── Prompt injection scan (regex + LLM)
@@ -310,8 +330,10 @@ POST /api/match (authenticated)
    │
    ├── Create tailoring_reports row (status: "pending")
    │
-   ├── Push to Redis Stream "tailoring-jobs":
-   │   { report_id, user_id, resume_id, jd_text, send_email }
+   ├── Push to Redis Stream (chosen by send_email flag):
+   │   ├── send_email=True  --> tailoring-jobs:email
+   │   └── send_email=False --> tailoring-jobs:urgent
+   │   Payload: { report_id, user_id, resume_id, jd_text, send_email }
    │
    └── Return 202 Accepted { report_id, status: "pending" }
 ```
@@ -331,8 +353,18 @@ POST /api/match (authenticated)
 
 - FastAPI serves HTTP requests. LLM calls block the event loop.
 - Worker runs independently, can be scaled separately
-- If worker crashes, jobs stay in the stream and are retried
+- If worker crashes, unacknowledged messages in the stream are reclaimable
 - Health check endpoint stays responsive even when worker is busy
+
+### Consumer groups vs plain xread
+
+The worker uses `XREADGROUP` with a consumer group (`ai-recruiter`) rather than plain `XREAD`. This provides:
+
+- **Message acknowledgment**: Processed messages are `XACK`ed, so they're not re-delivered to the same consumer.
+- **Pending entry recovery**: If the worker crashes mid-processing, `XPENDING` + `XCLAIM` recovers entries that were delivered but never acknowledged. Entries are only claimed after being idle for 60 seconds (`min_idle_time=60000`), avoiding races with a still-running previous instance.
+- **Horizontal scaling**: Multiple worker instances can each have their own consumer name within the same group. Messages are distributed across consumers.
+
+Trade-off: requires XACK discipline and pending recovery logic, but provides durability that plain xread lacks.
 
 ### Worker loop
 
@@ -341,54 +373,56 @@ Worker starts
    │
    ├── init_db() -- create async connection pool (pool_pre_ping enabled)
    ├── get_redis() -- connect to Upstash
-   ├── Load saved stream position from Redis (worker:last_stream_id)
-   │   └── If no saved position: flush entire stream, start from latest ("$")
-   ├── XTRIM stream (maxlen ~50) -- clean stale entries
+   ├── Consumer name: "worker-{hostname}-{pid}"
+   │
+   ├── Create consumer groups (idempotent, mkstream=True):
+   │   ├── XGROUP CREATE tailoring-jobs:urgent ai-recruiter 0 MKSTREAM
+   │   └── XGROUP CREATE tailoring-jobs:email ai-recruiter 0 MKSTREAM
+   │
+   ├── Recover pending entries (from crashed instances):
+   │   ├── XPENDING on urgent stream --> fetch actual msg IDs --> XCLAIM (min_idle_time=60s)
+   │   └── XPENDING on email stream  --> fetch actual msg IDs --> XCLAIM (min_idle_time=60s)
    │
    └── while True:
-       ├── xread("tailoring-jobs", last_id, count=1)
-       │   └── Polls every 10s waiting for new messages
+       ├── XREADGROUP from tailoring-jobs:urgent (consumer group, count=1)
+       │   └── For each entry: parse, dispatch to run_with_ack()
        │
-       ├── if no entries:
+       ├── XREADGROUP from tailoring-jobs:email (consumer group, count=1)
+       │   └── For each entry: parse, dispatch to run_with_ack()
+       │
+       ├── if no entries from either stream:
        │   ├── poll_count++
        │   ├── if poll_count >= 100:
        │   │   └── run_cleanup() -- purge old data
        │   └── sleep(10s)
        │
-       ├── parse payload from stream entry
+        ├── run_with_ack(payload, retries, redis, stream, msg_id, semaphore):
+        │   ├── Acquire semaphore (max 3 concurrent jobs)
+        │   ├── process_job(payload, db, redis)
+        │   ├── XACK the message on success
+        │   └── On failure:
+        │       ├── If retries < 3: re-enqueue to same stream (retries incremented in payload), XACK original
+        │       └── If retries >= 3: XACK and log failure
        │
-       ├── process_job(payload, db, redis):
-       │   ├── Idempotency check: skip if report already completed/failed
-       │   ├── Update status --> "processing"
-       │   ├── compute_similarity() -- scoring
-       │   ├── scrub_pii() -- mask sensitive data
-       │   ├── generate_candidate_report() -- LLM call 1
-       │   ├── generate_interview_questions() -- LLM call 2
-       │   ├── generate_actionable_rewrites() -- LLM call 3
-       │   ├── Save results to PostgreSQL (status --> "completed")
-       │   ├── Publish to Redis Pub/Sub channel "report:{report_id}"
-       │   ├── Generate PDF report
-       │   ├── Send email via Brevo (if send_email flag set)
-       │   └── Persist stream position to Redis
-       │
-       ├── XTRIM stream (maxlen ~50) -- cap message accumulation
-       │
-       └── on failure:
-           ├── Rollback aborted transaction
-           ├── Mark report as "failed" via fresh DB session
-           ├── Publish failed status to Redis Pub/Sub
-           └── Retry with re-enqueue (max 3 attempts per report)
+       └── process_job(payload, db, redis):
+           ├── Validate payload keys (report_id required, others accessed via .get())
+           ├── Idempotency check: skip if report already completed/failed
+           ├── Update status --> "processing"
+           ├── compute_similarity() -- scoring
+           ├── scrub_pii() -- mask sensitive data
+           ├── generate_candidate_report() -- LLM call 1
+           ├── generate_interview_questions() -- LLM call 2
+           ├── generate_actionable_rewrites() -- LLM call 3
+           ├── Save results to PostgreSQL (status --> "completed")
+           ├── Generate PDF report
+           ├── Send email via Brevo (if send_email flag set)
+           └── On failure: rollback, open fresh DB session, mark report as "failed"
+               with generic error message (no internal details leaked to DB)
 ```
 
-### Why xread instead of xreadgroup
+### Concurrency
 
-- Consumer groups require acknowledging messages (XACK)
-- If worker crashes mid-processing, unacknowledged messages get stuck
-- `xread` with last_id tracking is simpler and more resilient
-- Stream position persisted in Redis survives restarts
-- Idempotency check prevents duplicate processing on restart
-- Stream trimming caps memory usage without manual cleanup
-- Trade-off: no horizontal scaling (only one worker), but that's fine for free tier
+The worker runs up to 3 jobs concurrently via `asyncio.Semaphore(3)`. Each job is dispatched as an `asyncio.Task`. On shutdown, the worker waits for all active tasks to complete before closing connections.
 
 ---
 
@@ -481,6 +515,10 @@ Before sending resume text to the LLM, the worker scrubs:
 
 This prevents the LLM from seeing or repeating personal information in generated content.
 
+### Empty response handling
+
+The LLM client handles edge cases where the API returns an empty `choices` array or an empty `message.content`. In both cases, it returns a structured `{"error": "LLM returned empty response"}` dict instead of crashing. The streaming path skips chunks with empty `choices` arrays.
+
 ---
 
 ## 10. Report Retrieval & SSE
@@ -498,11 +536,15 @@ Dashboard mounts
    │
    └── GET /api/reports/{id}/stream -- SSE endpoint
        │
+       ├── Authenticated: user_id extracted from JWT cookie
+       ├── Query filters by both report_id AND user_id (prevents IDOR)
+       │
        ├── If already completed/failed: send status immediately
        │
-       └── Otherwise: subscribe to Redis Pub/Sub channel "report:{report_id}"
-           └── Worker publishes { status: "completed" } when done
-               └── SSE pushes status instantly to client
+       └── Otherwise: poll DB every 2 seconds (max 150 polls = 5 min timeout)
+           ├── Each poll opens a fresh DB session (avoids stale connections)
+           ├── On status change: emit event and close
+           └── After 5 minutes without change: emit {"status": "timeout"}
 ```
 
 ### Frontend consumption
@@ -549,9 +591,14 @@ User types question
    ▼
 POST /api/chat/stream
    │
-   ├── Validate message (length, injection, rate limit)
+   ├── Validate message (length, injection, off-topic, recruitment relevance)
+   │   ├── Injection check: regex + LLM classifier
+   │   ├── Must match at least 1 recruitment keyword category
+   │   └── Blocked if matches 1+ off-topic pattern (weather, sports, etc.)
    │
-   ├── Fetch report (verify ownership)
+   ├── Fetch report (verify ownership via user_id from JWT)
+   │
+   ├── Rate limit: atomic INCR + EXPIRE on chat_rate:{session_key} (max 50/hr)
    │
    ├── Embed query (all-MiniLM-L6-v2)
    │
@@ -571,6 +618,15 @@ POST /api/chat/stream
    │
    └── Save conversation to Redis session store
 ```
+
+### Off-topic detection
+
+Off-topic checking uses two sequential gates:
+
+1. **Recruitment relevance**: The message must match at least 1 of 14 recruitment keyword categories (resume, skills, interview, etc.). If it matches zero, it's rejected immediately.
+2. **Off-topic patterns**: If the message is recruitment-related, it's then checked against 13 off-topic patterns (weather, sports, politics, etc.). Matching **1 or more** patterns triggers rejection.
+
+This means a message like "tell me about the weather in Seattle" fails gate 1 (no recruitment keywords) and would never reach gate 2. A message like "how does my resume compare to weather forecast jobs" passes gate 1 but would likely be allowed since it doesn't match the off-topic regex patterns directly. The threshold is deliberately low (1 match) to minimize false negatives.
 
 ### Why conversation history in Redis
 
@@ -596,7 +652,7 @@ POST /api/chat/stream
 
 | Layer | What it catches | How |
 |-------|----------------|-----|
-| Query classification | Off-topic questions | 14 recruitment keyword categories |
+| Query classification | Off-topic questions | 14 recruitment keyword categories + 13 off-topic patterns (threshold: 1 match) |
 | Input validation | Injection, abuse | Length cap (2000), injection detection, rate limit (50/hr) |
 | Output sanitization | LLM leaking info | Code block stripping, URL removal |
 
@@ -606,12 +662,15 @@ Regex catches obvious patterns instantly (e.g., "ignore previous instructions").
 
 ### Why rate limiting at multiple levels
 
-| Endpoint | Limit | Why |
+All rate limiters use atomic Redis pipelines (`INCR` + `EXPIRE` in a single pipeline execution) to prevent race conditions where concurrent requests could bypass limits.
+
+| Endpoint | Limit | How |
 |----------|-------|-----|
-| OTP request | 3/5min | Prevents email bombing |
-| Chat messages | 50/session/hour | Prevents LLM abuse |
-| Match submissions | 5/day/user | Budget control |
-| Upload | 10/hour | Prevents storage exhaustion |
+| OTP request | 3/5min | Atomic pipeline on `otp_rate:{email}` |
+| Anonymous login | 5/hr | Atomic pipeline on `anon_rate:global` |
+| Chat messages | 50/session/hr | Atomic pipeline on `chat_rate:{session_key}` |
+| Match submissions | 5/day/user | Atomic pipeline on `match_rate:{user_id}` |
+| Upload | 10/hour | Atomic pipeline on upload rate key |
 
 ---
 
@@ -676,12 +735,24 @@ The worker runs cleanup every 100 stream polls (~17 minutes):
 - Responsive: `md:grid-cols-3` for multi-column layouts
 - Small bundle: PurgeCSS removes unused classes
 
+### API base URL
+
+All API requests use `process.env.REACT_APP_API_URL` (CRA convention) with a fallback to `http://localhost:8000`. This is read in `services/api.js`, `ChatSection.jsx`, and `Dashboard.jsx`. Create React App injects `REACT_APP_*` env vars at build time.
+
 ### API client
 
 All requests go through `services/api.js`:
 - `credentials: "include"` on every fetch (attaches HttpOnly cookie)
 - No JWT manipulation in JavaScript
 - SSE via `EventSource` for report status streaming
+
+### Dashboard markdown rendering
+
+Chat messages from the AI are rendered using `react-markdown` with the `remark-gfm` plugin. This allows the LLM to return markdown-formatted responses (bold, lists, code blocks, tables) that render properly in the chat UI. Both the `ChatSection` component and the inline chat in `Dashboard.jsx` use this approach.
+
+### AbortController for cleanup
+
+The Dashboard uses `AbortController` for chat fetch requests. When a user navigates away or triggers a new request while a previous one is in flight, the controller's `signal` is passed to `fetch()`. On unmount, the `AbortError` is caught and silently ignored, preventing stale responses from updating unmounted component state.
 
 ### Why credentials: include
 
@@ -732,17 +803,28 @@ All discrepancies between documentation and actual code have been resolved:
 
 | Gap | Fix |
 |-----|-----|
-| SSE polling DB vs Redis Pub/Sub | Worker publishes to Redis channel; SSE endpoint subscribes |
+| SSE polling DB vs Redis Pub/Sub | Worker publishes to Redis channel; SSE endpoint polls DB with user_id filter and 5-min timeout |
 | localStorage for user data | Removed; user email fetched from /api/auth/me via HttpOnly cookie |
-| ChatSection process.env vs import.meta.env | Fixed to use import.meta.env.VITE_API_URL |
+| ChatSection process.env vs import.meta.env | Fixed to use `process.env.REACT_APP_API_URL` (CRA convention) |
 | ChatSection Authorization header | Removed; credentials:include handles auth via cookie |
 | pyproject.toml chromadb dependency | Removed |
 | settings.py Resend config | Removed (replaced by Brevo) |
 | Parser layout-aware parsing | Already implemented (get_text("blocks") with position sorting) |
-| Stream message accumulation | XTRIM MAXLEN ~50 after each message and on startup |
+| Stream message accumulation | XGROUP CREATE with MKSTREAM on startup; XACK after processing |
 | Duplicate job processing | Idempotency check skips already-completed/failed reports |
-| Worker restart re-reads all messages | Stream position persisted in Redis (worker:last_stream_id) |
-| Worker infinite retry loop | Fresh DB session for marking reports as failed; rollback before update |
-| Stale stream on first boot | Entire stream flushed when no saved position exists |
+| Worker plain xread | Upgraded to XREADGROUP with consumer groups; pending recovery via XPENDING + XCLAIM |
+| Worker infinite retry loop | Fresh DB session for marking reports as failed; rollback before update; generic error messages in DB |
+| Stale stream on first boot | Consumer group created with `mkstream=True`; no stream flush needed |
 | Database stale connections | pool_pre_ping=True on async engine |
 | Worker startup race | Worker depends on backend healthcheck (docker-compose) |
+| OTP timing attack | hmac.compare_digest() for timing-safe comparison |
+| Anonymous login abuse | Rate-limited to 5/hr via atomic Redis pipeline |
+| Email case sensitivity | Email normalized (strip + lowercase) before all operations |
+| GitHub token in body | Moved to X-GitHub-Token header |
+| Missing payload keys in worker | .get() used for optional keys; report_id validated explicitly; generic error on failure |
+| /reports N+1 query | Batch-fetches filenames with a single IN query, builds lookup map |
+| LLM empty choices crash | Empty choices/content handled with structured error dict |
+| Rate limit race conditions | All rate limiters use atomic Redis pipelines (INCR + EXPIRE) |
+| Off-topic false negatives | Threshold lowered to 1 pattern match; short messages no longer bypass off-topic check |
+| Dashboard chat not rendering markdown | ReactMarkdown + remark-gfm added to both ChatSection and Dashboard |
+| Frontend cleanup on unmount | AbortController used for chat fetch; stale responses silently ignored |

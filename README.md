@@ -6,26 +6,27 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 
 ## Features
 
-- **Email OTP Authentication** -- Passwordless sign-in via 6-digit code (Brevo email)
+- **Email OTP Authentication** -- Passwordless sign-in via 6-digit code (Brevo email); OTP compared with constant-time `hmac.compare_digest()` to prevent timing attacks
 - **Resume Ingestion** -- PDF/DOCX upload with magic-byte verification, SHA-256 deduplication; parsed, chunked, and embedded into PostgreSQL via pgvector
 - **Upload Validation** -- File type verification (magic bytes), size limit (10 MB), page limit (30), text length limit (50K chars)
 - **Document Classification** -- Two-tier classifier: keyword heuristics (fast) + LLM fallback (uncertain cases) with confidence scores
 - **Content Moderation** -- Scans uploaded text for unsafe content before storage
 - **Prompt Injection Defense** -- Two-tier detection: regex patterns + LLM classifier; hardens LLM system prompts with "documents are data only" rules and content delimiters
-- **Query Classification** -- Validates user questions are recruitment-related before RAG; rejects off-topic and injection attempts
-- **Modular Guardrails** -- Split into focused modules: injection, moderation, query, output, rate_limit, upload
+- **Query Classification** -- Validates user questions are recruitment-related before RAG; rejects off-topic (threshold: ≥1 match) and injection attempts; short messages no longer bypass checks
+- **Modular Guardrails** -- Split into focused modules: injection, moderation, query, output, rate_limit, upload, pii
 - **Async Job Queue** -- Redis Streams producer/consumer pattern; jobs are submitted instantly (202) and processed in a separate worker with stream trimming (XTRIM ~50), idempotency checks, and persisted stream position across restarts
 - **ATS Compatibility Scoring** -- Deterministic skill matching (semantic + regex) at 70% weight + document similarity at 30%, with category breakdown (skills, experience, education, projects, keywords)
 - **Career Coach AI** -- Hardened LLM prompts focus on ATS optimization; document content treated as untrusted data
 - **Actionable Rewrites** -- AI generates rewritten bullet points for weak resume sections
 - **Gap-Focused Interview Prep** -- Questions target the candidate's exact skill gaps with prep tips
-- **Report History** -- All past analyses persist in PostgreSQL with a sidebar dashboard
-- **Streaming Chat** -- Resume-aware conversational follow-ups with JD + GitHub context via RAG
-- **Chat Guardrails** -- Input validation, prompt injection protection, recruitment-domain enforcement, output sanitization, rate limiting
+- **Report History** -- All past analyses persist in PostgreSQL with a sidebar dashboard; N+1 queries replaced with bulk fetch
+- **Streaming Chat** -- Resume-aware conversational follow-ups with JD + GitHub context via RAG; AI messages rendered with ReactMarkdown; errors displayed inline in chat UI
+- **Chat Guardrails** -- Input validation (2000-char limit), prompt injection protection, recruitment-domain enforcement, output sanitization, rate limiting
 - **Report Completion Email** -- Brevo sends notification with ATS score, dashboard link, and PDF attachment when analysis completes
 - **JD Embedding Cache** -- Redis-cached JD embeddings (SHA-256 key, 24h TTL) to avoid redundant computation
 - **TTL Auto-Cleanup** -- Old chunks (7d), reports (14d), and orphaned resumes purged automatically to stay within free-tier limits
-- **Background Worker** -- Separate process with retry/backoff, stream trimming, idempotency, persisted stream position (Redis), fresh session on error, email notifications, and periodic cleanup
+- **Background Worker** -- Separate process with retry/backoff, stream trimming, idempotency, persisted stream position (Redis), fresh session on error, email notifications, and periodic cleanup; dual-stream consumption (urgent + email) prevents priority starvation; pending message recovery via XPENDING + XCLAIM
+- **Security Hardening** -- JWT_SECRET validated at startup, anonymous login rate-limited (5/hr), GitHub token in header (not query param), CORS restricted, CSP header, exception messages sanitized, atomic Redis operations, hostname-pid worker naming
 
 ---
 
@@ -61,9 +62,9 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
                                          │  8. Brevo email notification│
                                         └────────────────────────────┘
 
-  Dashboard ──► GET /api/reports ────► Postgres (list reports)
-                GET /api/reports/:id ─► Postgres (full report)
-                SSE /api/reports/:id/stream ─► Redis Pub/Sub (instant push)
+  Dashboard ──► GET /api/reports ────► Postgres (bulk fetch, no N+1)
+                GET /api/reports/:id ─► Postgres (full report, includes resume_id)
+                SSE /api/reports/:id/stream ─► Redis Pub/Sub (instant push, AbortController cleanup)
                 POST /api/chat ──────► Query classification → RAG → LLM → Stream
                                        (delimited JD + resume + GitHub context)
 ```
@@ -86,10 +87,10 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 | **Metrics** | Prometheus (prometheus-fastapi-instrumentator) |
 | **PDF Export** | html2canvas-pro + jsPDF |
 | **Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
-| **Validation** | Magic-byte verification, two-tier document classification |
+| **Validation** | Magic-byte verification, two-tier document classification, schema constraints (Pydantic max_length) |
 | **Guardrails** | Modular package (injection, moderation, query, output, rate_limit, upload, pii) |
 | **Cleanup** | TTL-based auto-purging (chunks, reports, orphaned resumes) |
-| **Worker** | Redis Streams, persisted stream position, fresh session on error |
+| **Worker** | Redis Streams, persisted stream position, fresh session on error, dual-stream consumer |
 | **Config** | Pydantic BaseSettings (centralized env management) |
 
 ---
@@ -99,7 +100,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 ```
 ├── backend/
 │   ├── main.py                  # FastAPI app, CORS, DB/Redis lifecycle, Prometheus
-│   ├── worker.py                # Redis Stream consumer (separate process, persisted position)
+│   ├── worker.py                # Redis Stream consumer (separate process, persisted position, XPENDING+XCLAIM recovery)
 │   ├── build_skill_cache.py     # Pre-builds skill embedding cache
 │   ├── alembic.ini              # Alembic configuration
 │   │
@@ -108,15 +109,15 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   └── constants.py         # App-wide constants (JWT TTL, rate limits, upload limits)
 │   │
 │   ├── core/
-│   │   ├── security.py          # JWT encode/decode
+│   │   ├── security.py          # JWT encode/decode (startup secret validation)
 │   │   └── dependencies.py      # Shared get_current_user dependency
 │   │
 │   ├── api/
-│   │   ├── auth.py              # POST /api/auth/request-otp, verify-otp, anonymous
+│   │   ├── auth.py              # POST /api/auth/request-otp, verify-otp, anonymous (constant-time OTP, normalized email)
 │   │   ├── upload.py            # POST /api/upload (validation + classification + dedup)
-│   │   ├── match.py             # POST /api/match (JD validation), GET /api/reports
-│   │   ├── chat.py              # POST /api/chat/stream (query classification + RAG + guardrails)
-│   │   ├── github.py            # GitHub data ingestion (auth + ownership check)
+│   │   ├── match.py             # POST /api/match (JD validation), GET /api/reports (bulk fetch)
+│   │   ├── chat.py              # POST /api/chat/stream (query classification + RAG + guardrails, message length cap)
+│   │   ├── github.py            # GitHub data ingestion (X-GitHub-Token header, username regex validation)
 │   │   ├── search.py            # Semantic search (auth + ownership check)
 │   │   └── session.py           # Session management (auth + ownership check)
 │   │
@@ -140,18 +141,18 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   │   ├── moderation.py    # Content moderation patterns
 │   │   │   ├── query.py         # Query classification + recruitment validation
 │   │   │   ├── output.py        # Output sanitization (code/URL/markdown stripping)
-│   │   │   ├── rate_limit.py    # Redis-based rate limiting
+│   │   │   ├── rate_limit.py    # Redis-based rate limiting (atomic pipeline)
 │   │   │   ├── upload.py        # Upload/JD validation helpers
 │   │   │   └── pii.py           # PII scrubbing (emails, phones, SSNs, etc.)
 │   │   │
 │   │   ├── llm/
-│   │   │   ├── client.py        # LLM client (document delimiters, classification, injection detection)
+│   │   │   ├── client.py        # LLM client (document delimiters, classification, injection detection, empty choices handling)
 │   │   │   └── prompts.py       # Hardened system prompts (domain-restricted)
 │   │   │
 │   │   ├── embedding/
-│   │   │   ├── embedder.py      # Embedding generation
+│   │   │   ├── embedder.py      # Embedding generation (returns lists, not numpy arrays)
 │   │   │   ├── model_registry.py # Model loading + caching
-│   │   │   └── skill_cache.py   # Pre-computed skill embeddings
+│   │   │   └── skill_cache.py   # Pre-computed skill embeddings (np.load, not pickle)
 │   │   │
 │   │   ├── matching/
 │   │   │   ├── matcher.py       # Main scoring orchestrator (JD caching, explainable breakdown)
@@ -161,15 +162,15 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   │   └── explainer.py
 │   │   │
 │   │   ├── parsing/
-│   │   │   ├── parser.py        # PDF/DOCX text extraction (with page validation)
-│   │   │   ├── chunker.py       # Text chunking
+│   │   │   ├── parser.py        # PDF/DOCX text extraction (no double-close)
+│   │   │   ├── chunker.py       # Text chunking (validates overlap < chunk_size)
 │   │   │   ├── skills.py        # Regex skill extraction
 │   │   │   ├── validator.py     # File type/size/page/text validation
 │   │   │   └── classifier.py    # Two-tier document classification (heuristic + LLM)
 │   │   │
 │   │   ├── storage/
-│   │   │   ├── vector_store.py  # PostgreSQL + pgvector (resume_chunks table)
-│   │   │   └── session_store.py # Redis-backed conversation history
+│   │   │   ├── vector_store.py  # PostgreSQL + pgvector (resume_chunks table, flush on delete)
+│   │   │   └── session_store.py # Redis-backed conversation history (pipeline for add_message)
 │   │   │
 │   │   ├── cleanup/
 │   │   │   ├── __init__.py      # Module exports
@@ -179,7 +180,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   │   └── __init__.py      # PDF report generation (fpdf2)
 │   │   │
 │   │   └── integrations/
-│   │       ├── github.py        # GitHub API client
+│   │       ├── github.py        # GitHub API client (X-GitHub-Token header)
 │   │       └── brevo.py         # Brevo email service (OTP + report notifications)
 │   │
 │   ├── migrations/
@@ -200,18 +201,19 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   ├── pages/
 │   │   │   ├── AuthPage.jsx     # Email OTP sign-in
 │   │   │   ├── UploadPage.jsx   # 3-step wizard (input -> processing -> queued)
-│   │   │   └── Dashboard.jsx    # Report history, results, chat
+│   │   │   └── Dashboard.jsx    # Report history, results, chat (immutable state updates)
 │   │   ├── components/
 │   │   │   ├── ScoreGauge.jsx, SkillsSection.jsx, ReportSection.jsx
-│   │   │   ├── QuestionsSection.jsx, ChatSection.jsx, Loader.jsx
+│   │   │   ├── QuestionsSection.jsx, ChatSection.jsx (inline error display), Loader.jsx
 │   │   ├── hooks/
 │   │   │   └── useBackendStatus.js
 │   │   ├── services/
-│   │   │   └── api.js           # Auth + API client with JWT injection
+│   │   │   └── api.js           # Auth + API client with JWT injection, REACT_APP_API_URL
 │   │   └── utils/
 │   │       └── pdfGenerator.js
+│   ├── .env                     # REACT_APP_API_URL
 │   ├── Dockerfile
-│   └── nginx.conf
+│   └── nginx.conf               # SSE-specific headers
 │
 ├── docker-compose.yml
 ├── render.yaml
@@ -258,10 +260,10 @@ python worker.py
 ```bash
 cd frontend/recruiter-ui
 npm install
-npm run dev
+npm start
 ```
 
-Open [http://localhost:5173](http://localhost:5173).
+Open [http://localhost:3000](http://localhost:3000).
 
 ### Docker Compose
 
@@ -281,11 +283,12 @@ docker compose up --build
 | `LLM_API_KEY` | NVIDIA API key | `nvapi-...` |
 | `LLM_BASE_URL` | LLM provider base URL | `https://integrate.api.nvidia.com/v1` |
 | `LLM_MODEL` | Model name | `mistralai/mistral-medium-3.5-128b` |
-| `JWT_SECRET` | Secret for signing JWT tokens | 64-char hex string |
+| `JWT_SECRET` | Secret for signing JWT tokens (validated at startup -- server exits if empty) | 64-char hex string |
 | `BREVO_API_KEY` | Brevo SMTP API key | `xkeysib-...` |
 | `BREVO_FROM_EMAIL` | Verified sender email | `noreply@yourdomain.com` |
 | `BREVO_FROM_NAME` | Sender display name | `AI Resume Tailor` |
-| `GITHUB_TOKEN` | (Optional) GitHub API token | `ghp_...` |
+| `GITHUB_TOKEN` | (Optional) GitHub API token (sent via X-GitHub-Token header) | `ghp_...` |
+| `REACT_APP_API_URL` | Frontend env var for backend API base URL | `http://localhost:8000` |
 
 ---
 
@@ -301,7 +304,7 @@ docker compose up --build
 ### Vercel (Frontend)
 
 1. Connect `frontend/recruiter-ui` to [Vercel](https://vercel.com).
-2. Set `VITE_API_URL` to your backend URL.
+2. Set `REACT_APP_API_URL` to your backend URL.
 3. Deploy.
 
 ---
@@ -311,8 +314,12 @@ docker compose up --build
 ### Authentication
 
 - Email OTP via Brevo (6-digit code, 5min TTL, 3 requests/5min rate limit)
+- OTP compared using `hmac.compare_digest()` (constant-time, prevents timing attacks)
+- Email normalized (lowercase + strip) before lookup to prevent duplicate accounts
 - JWT tokens stored in HttpOnly cookie (httponly, secure, samesite=strict)
-- Anonymous login available for quick testing
+- Cookie deletion also uses httponly/secure/samesite flags
+- `JWT_SECRET` validated at startup -- server refuses to start if empty
+- Anonymous login rate-limited (5 requests/hr global)
 
 ### Upload Security
 
@@ -330,15 +337,17 @@ docker compose up --build
 - **Classification check** -- Two-tier verification that text is a JD (not a resume or other content)
 - **Injection scan** -- Same two-tier detection as uploads
 - **Content moderation** -- Same moderation scan as uploads
-- **Length limit** -- 50,000 characters maximum
+- **Length limit** -- 50,000 characters maximum (`MatchRequest.jd_text` max_length)
 
 ### Chat Security
 
-- **Query classification** -- Validates questions are recruitment-related before RAG
+- **Query classification** -- Validates questions are recruitment-related before RAG; short messages no longer bypass checks
 - **Prompt injection detection** -- Two-tier: regex patterns + LLM classifier
-- **Rate limiting** -- 50 messages per session per hour via Redis
-- **Message length cap** -- 2000 characters per message
-- **Output sanitization** -- Code blocks, URLs, and markdown stripped from LLM responses
+- **Off-topic threshold** -- Lowered to 1 match (was 2) for stricter enforcement
+- **Rate limiting** -- 50 messages per session per hour via Redis (atomic pipeline for incr+expire)
+- **Message length cap** -- 2000 characters per message (`ChatRequest.message` max_length)
+- **Output sanitization** -- Code blocks, URLs, and markdown stripped from LLM responses; sanitization applied once to final output (not cumulative per-token)
+- **Embedding normalization** -- Both `embed_documents()` and `get_embeddings()` use `normalize_embeddings=True` for consistent cosine similarity
 
 ### Prompt Hardening
 
@@ -349,24 +358,42 @@ docker compose up --build
 ### Authorization
 
 - All resource endpoints verify `user_id` ownership via JWT
+- SSE poll query includes `user_id` (prevents auth bypass)
 - GitHub ingestion, search, and session deletion all check `MasterResume.user_id == user_id`
+- GitHub username validated with regex (prevents path traversal)
+- GitHub token sent via `X-GitHub-Token` header (not URL query parameter)
 - Returns 404 (not 403) to avoid leaking resource existence
 
 ### Infrastructure
 
+- **CORS** restricted to specific methods and headers (not wildcard)
+- **Content-Security-Policy** header added to index.html
+- **Exception messages** sanitized -- no internal details leaked to clients
 - LLM API key is server-side only (never sent to frontend)
 - Alembic migrations for schema versioning
 - Docker Compose runs `alembic upgrade head` on startup; worker depends on backend healthcheck
 - JD embeddings cached in Redis (SHA-256 key, 24h TTL)
+- Skill cache uses `np.load` (not `pickle.load`) to prevent arbitrary code execution
 - Stream trimming (XTRIM ~50) prevents unbounded message accumulation
 - Stream position persisted in Redis (worker:last_stream_id) survives restarts
 - Idempotency check skips already-processed reports on worker restart
+- Worker uses `hostname-pid` consumer name (prevents collisions between instances)
+- Worker checks both urgent and email streams each loop (prevents priority starvation)
+- Worker uses `xclaim` with `min_idle_time=60000` (not 0) for proper idle detection
+- Pending message recovery via XPENDING + XCLAIM (not hardcoded "0-0")
+- Retry counter read from message payload (not outer variable)
+- Worker validates `report_id` exists before processing; stores generic error messages in DB
 - TTL auto-cleanup prevents unbounded database growth (7d chunks, 14d reports)
 - PII scrubbing before LLM calls (emails, phones, SSNs, credit cards, IPs, addresses)
 - Daily match rate limiting (5/day/user)
-- SSE streaming for job status (replaces polling)
-- pool_pre_ping on database engine (detects stale connections)
+- SSE streaming for job status (5-minute timeout, AbortController for unmount cleanup)
+- `vector_store.delete_by_resume` calls `flush()` to ensure deletions persist
+- LLM empty choices handled gracefully (no IndexError)
+- `embedder.get_embeddings()` and `embed_documents()` return plain lists (not numpy arrays); both use `normalize_embeddings=True`
+- `postgres://` URL auto-converted to `postgresql://` for SQLAlchemy compatibility
+- `pool_pre_ping` on database engine (detects stale connections)
 - Fresh DB session for error handling (prevents infinite retry loops)
+- Session store `add_message` uses Redis pipeline for atomic read-modify-write
 
 ---
 

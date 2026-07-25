@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 from uuid import UUID
@@ -92,7 +93,7 @@ async def upload_document(
             )
 
         chunk_texts = [c["text"] for c in chunk_dicts]
-        embeddings = embedder.embed_documents(chunk_texts)
+        embeddings = await asyncio.to_thread(embedder.embed_documents, chunk_texts)
         if not embeddings:
             return UploadRejectResponse(
                 reason="Failed to generate embeddings for the document.",
@@ -106,8 +107,7 @@ async def upload_document(
             filename=file.filename,
         )
         db.add(resume)
-        await db.commit()
-        await db.refresh(resume)
+        await db.flush()
 
         metadatas = [
             {"source": "resume", "skills": ", ".join(resume_skills)}

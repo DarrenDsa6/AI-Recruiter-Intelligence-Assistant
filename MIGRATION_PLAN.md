@@ -183,6 +183,64 @@ Fixed infinite retry loops and stale message accumulation:
 - **Alembic env.py fix**: Removed `connection.commit()` that broke alembic's transaction management, preventing migration version from being updated.
 - **Migration 002**: Simplified to no-op (columns removed from model).
 
+## Phase 20: Security Hardening & Bug Fixes -- DONE
+
+- **Timing-safe OTP comparison**: `hmac.compare_digest()` prevents timing attacks on OTP verification
+- **JWT secret validation**: App exits at startup if JWT_SECRET is empty (prevents unsigned tokens)
+- **Anonymous login rate limiting**: Global limit of 5 anonymous sessions per hour
+- **GitHub token security**: Moved from URL query param to X-GitHub-Token header (prevents log leakage)
+- **GitHub username validation**: Regex validation prevents path traversal on GitHub API
+- **Pickle removal**: Replaced `pickle.load()` with `np.load(allow_pickle=True)` in skill cache (prevents arbitrary code execution)
+- **Exception sanitization**: All API endpoints return generic error messages (no internal details leaked)
+- **Atomic Redis rate limiting**: All rate limiters use pipeline (incr+expire in one round trip, no race condition)
+- **Session store race condition**: add_message uses pipeline for atomic read-modify-write
+- **Worker consumer uniqueness**: Consumer name uses hostname-pid (prevents collision between instances)
+- **Worker priority starvation fix**: Both urgent and email streams checked each loop iteration
+- **SSE polling timeout**: 5-minute timeout prevents infinite polling (150 polls × 2s)
+- **SSE poll authorization**: Poll query includes user_id (prevents unauthorized status tracking)
+- **Worker error handling**: Missing report_id handled gracefully; generic error messages in DB
+- **Worker xclaim safety**: min_idle_time=60000 prevents claiming actively-processed messages
+- **PyMuPDF double-close fix**: Removed redundant doc.close() in validator (prevents segfault)
+- **Vector store commit**: delete_by_resume calls flush() (prevents silent data loss)
+- **LLM empty choices**: Handled gracefully (no IndexError crash)
+- **Frontend env vars**: All import.meta.env.VITE_API_URL → process.env.REACT_APP_API_URL (was broken in Docker)
+- **Dashboard markdown**: AI chat messages rendered with ReactMarkdown
+- **Dashboard state mutation**: Immutable updates (prevents React re-render bugs)
+- **Dashboard unmount cleanup**: SSE stream uses AbortController
+- **Chat error feedback**: Stream errors shown in chat UI
+- **N+1 query fix**: /reports endpoint uses bulk fetch instead of per-report query
+- **Schema validation**: max_length on ChatRequest.message (2000) and MatchRequest.jd_text (50000)
+- **CORS hardening**: Restricted to specific methods and headers
+- **Cookie security**: Delete cookie has httponly/secure/samesite flags
+- **Content-Security-Policy**: Added to index.html
+- **Nginx SSE headers**: Connection '', proxy_http_version 1.1, chunked_transfer_encoding off
+- **Email normalization**: Auth emails normalized (lowercase, strip)
+- **Off-topic guardrail**: Threshold lowered from 2 to 1 match; short messages no longer bypass
+- **postgres:// URL conversion**: settings.py handles Heroku-style postgres:// URLs
+- **Embedder returns lists**: get_embeddings() returns Python lists, not numpy arrays
+- **Report API resume_id**: /reports and /reports/:id responses include resume_id
+
+## Phase 21: Deep Scan Bug Fixes -- DONE
+
+Fixed 15 bugs identified by comprehensive codebase audit:
+
+- **Worker retry counter**: `parse_payload()` reads retries from `payload.get("retries", 0)` instead of outer `data` variable (was always 0, causing infinite retries)
+- **Worker XCLAIM recovery**: Uses XPENDING → fetch actual msg IDs → XCLAIM (was hardcoded `["0-0"]` which never matched real messages)
+- **Worker stale continue**: Removed `continue` after email entries that caused tight CPU loop
+- **Session delete commit**: Added `await db.commit()` after `delete_by_resume` in `delete_session`; fixed `end_router` → `router` typo
+- **Upload atomicity**: Two-commit pattern replaced with `db.flush()` + single commit (prevents orphaned resumes)
+- **Async embedding**: Sync `embed_documents()`/`get_embeddings()` wrapped in `asyncio.to_thread()` in chat.py, search.py, upload.py, matcher.py (was blocking event loop)
+- **LLM stream errors**: `stream_chat()` now re-raises exceptions instead of silently returning empty response
+- **O(n²) sanitize**: Chat SSE sanitization moved to final output only (was re-sanitizing entire cumulative string per token)
+- **Vector store distances**: `query_by_resume` returns actual cosine distances (was hardcoded `0.0`)
+- **Chunker infinite loop**: Guard against `overlap >= chunk_size` with ValueError
+- **Auth race condition**: IntegrityError on concurrent duplicate email handled with rollback + re-fetch
+- **Embedder normalization**: `embed_documents()` now uses `normalize_embeddings=True` (was inconsistent with `get_embeddings()`)
+- **UploadPage stale closure**: `githubUsername` added to `useCallback` deps (GitHub ingest never ran)
+- **AbortController cleanup**: Dashboard + ChatSection store AbortController in ref and abort on unmount
+- **AuthPage unhandled rejection**: `.catch()` added to OTP resend promise
+- **ChatSection duplicate error**: Removed redundant `setCurrentAI` + `setMessages` on error (showed two error messages)
+
 ---
 
 ## Security Notes
@@ -200,8 +258,23 @@ Fixed infinite retry loops and stale message accumulation:
 11. **Authorization**: All resource endpoints verify user_id ownership (returns 404)
 12. **PII scrubbing**: Resume text scrubbed before LLM calls (emails, phones, SSNs, credit cards, IPs, addresses)
 13. **TTL auto-cleanup**: Old chunks (7d), reports (14d), and orphaned resumes purged automatically
-14. Alembic migrations for schema versioning
-15. Centralized config (no hardcoded secrets)
+14. **Timing-safe OTP**: hmac.compare_digest prevents timing attacks
+15. **JWT secret validation**: App fails fast if JWT_SECRET is empty
+16. **Anonymous login rate limit**: 5/hour global cap
+17. **GitHub security**: Token in header (not URL), username regex validation
+18. **No pickle**: np.load with allow_pickle=True instead of pickle.load
+19. **Exception sanitization**: Generic error messages only
+20. **Atomic rate limiting**: Redis pipeline (no race conditions)
+21. **Worker safety**: hostname-pid consumer, xclaim min_idle, priority starvation fix
+22. **SSE hardening**: 5-min timeout, user_id authorization
+23. **PyMuPDF fix**: No double-close (prevents segfault)
+24. **CORS hardening**: Restricted methods and headers
+25. **Cookie security**: httponly/secure/samesite on delete
+26. **Content-Security-Policy**: Added to index.html
+27. **Email normalization**: Lowercase + strip on auth
+28. **Off-topic guardrail**: Threshold lowered, short messages no longer bypass
+29. Alembic migrations for schema versioning
+30. Centralized config (no hardcoded secrets)
 
 ---
 
@@ -249,6 +322,52 @@ Fixed infinite retry loops and stale message accumulation:
 - [x] Shared auth dependency (no duplication)
 - [x] Alembic database migrations
 - [x] Service directory organization
+- [x] Timing-safe OTP comparison (hmac.compare_digest)
+- [x] JWT secret validation at startup
+- [x] Anonymous login rate limiting (5/hour)
+- [x] GitHub token in header (not URL)
+- [x] GitHub username regex validation
+- [x] Pickle replaced with np.load(allow_pickle=True)
+- [x] Exception sanitization on all API endpoints
+- [x] Atomic Redis rate limiting (pipeline)
+- [x] Atomic session message add (pipeline)
+- [x] Worker hostname-pid consumer name
+- [x] Worker priority starvation fix
+- [x] SSE polling timeout (5 min)
+- [x] SSE poll authorization (user_id)
+- [x] Worker xclaim min_idle_time safety
+- [x] PyMuPDF double-close fix
+- [x] Vector store flush on delete
+- [x] LLM empty choices handling
+- [x] Frontend env vars for Docker (REACT_APP_API_URL)
+- [x] ReactMarkdown in dashboard chat
+- [x] Immutable state updates in Dashboard
+- [x] SSE AbortController cleanup on unmount
+- [x] Chat error feedback in UI
+- [x] N+1 query fix on /reports endpoint
+- [x] Schema max_length validation (chat + match)
+- [x] CORS hardened (specific methods/headers)
+- [x] Cookie security flags on delete
+- [x] Content-Security-Policy header
+- [x] Nginx SSE proxy headers
+- [x] Email normalization (lowercase, strip)
+- [x] Off-topic guardrail threshold lowered
+- [x] postgres:// URL conversion
+- [x] Embedder returns Python lists
+- [x] Report API includes resume_id
+- [x] Worker retry counter from payload (not outer variable)
+- [x] Worker XPENDING + XCLAIM recovery (not hardcoded "0-0")
+- [x] Async embedding calls via asyncio.to_thread()
+- [x] LLM stream_chat re-raises errors
+- [x] Chat sanitize on final output only (not O(n²) cumulative)
+- [x] Vector store returns actual cosine distances
+- [x] Chunker validates overlap < chunk_size
+- [x] Auth IntegrityError race condition handled
+- [x] Embedder embed_documents uses normalize_embeddings
+- [x] UploadPage stale closure fixed (githubUsername in deps)
+- [x] AbortController cleanup on Dashboard + ChatSection unmount
+- [x] AuthPage OTP resend unhandled rejection fixed
+- [x] ChatSection duplicate error message removed
 
 ---
 
@@ -269,7 +388,7 @@ Fixed infinite retry loops and stale message accumulation:
 - `backend/services/pdf/__init__.py` -- PDF report generation (fpdf2)
 - `backend/migrations/versions/002_add_chunk_offsets.py` -- Alembic migration for chunk offset columns
 
-### Modified Files (Phases 15-19)
+### Modified Files (Phases 15-21)
 - `backend/api/auth.py` -- Full OTP flow (request-otp, verify-otp, anonymous) with Brevo + HttpOnly cookie
 - `backend/api/upload.py` -- Uses modular guardrails, two-tier classification, no offset metadata
 - `backend/api/match.py` -- Uses validate_jd_text, two-tier classification, daily rate limit, email opt-in, SSE via Redis Pub/Sub
@@ -302,6 +421,23 @@ Fixed infinite retry loops and stale message accumulation:
 - `frontend/recruiter-ui/src/components/ChatSection.jsx` -- import.meta.env.VITE_API_URL, credentials:include
 - `frontend/recruiter-ui/src/services/api.js` -- credentials:include on all requests
 - `ARCHITECTURE.md`, `README.md`, `MIGRATION_PLAN.md`, `PROJECT_FLOW.md` -- Updated documentation
+
+### Modified Files (Phase 21: Deep Scan Fixes)
+- `backend/worker.py` -- Retry counter from payload, XPENDING+XCLAIM recovery, stale continue removed
+- `backend/api/session.py` -- Missing commit after delete, end_router typo fixed
+- `backend/api/upload.py` -- Two-commit replaced with flush+single commit, asyncio.to_thread for embeddings
+- `backend/api/chat.py` -- asyncio.to_thread for embeddings, O(n²) sanitize fixed
+- `backend/api/search.py` -- asyncio.to_thread for embeddings
+- `backend/services/matching/matcher.py` -- asyncio.to_thread for embeddings, _score_chunks made async
+- `backend/services/llm/client.py` -- stream_chat re-raises errors instead of silent return
+- `backend/services/storage/vector_store.py` -- Returns actual cosine distances
+- `backend/services/parsing/chunker.py` -- Validates overlap < chunk_size
+- `backend/services/embedding/embedder.py` -- normalize_embeddings=True on embed_documents
+- `backend/api/auth.py` -- IntegrityError handled on duplicate email
+- `frontend/recruiter-ui/src/pages/UploadPage.jsx` -- githubUsername in useCallback deps
+- `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- AbortController ref + unmount cleanup
+- `frontend/recruiter-ui/src/pages/AuthPage.jsx` -- .catch() on OTP resend
+- `frontend/recruiter-ui/src/components/ChatSection.jsx` -- AbortController + duplicate error removed
 
 ### Deleted Files (Phase 15)
 - `backend/services/guardrails.py` (replaced by guardrails/ package)

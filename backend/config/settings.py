@@ -1,5 +1,7 @@
+import sys
+
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -24,11 +26,22 @@ class Settings(BaseSettings):
 
     cors_origins: str = Field(default="", alias="CORS_ORIGINS")
 
+    @field_validator("jwt_secret")
+    @classmethod
+    def _validate_jwt_secret(cls, v: str) -> str:
+        if not v:
+            print("FATAL: JWT_SECRET is not set. Authentication will be insecure.", file=sys.stderr)
+            sys.exit(1)
+        return v
+
     @property
     def database_url_async(self) -> str:
-        if self.database_url.startswith("postgresql://"):
-            return self.database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-        return self.database_url
+        url = self.database_url
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        if url.startswith("postgresql://"):
+            return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return url
 
     @property
     def cors_origin_list(self) -> list[str]:

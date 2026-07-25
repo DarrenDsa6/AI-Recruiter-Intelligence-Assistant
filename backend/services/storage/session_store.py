@@ -24,9 +24,16 @@ class SessionStore:
     async def add_message(self, session_id: str, role: str, content: str):
         r = await self._redis()
         key = f"session:{session_id}"
-        raw = await r.get(key)
+        msg = json.dumps({"role": role, "content": content})
+
+        pipe = r.pipeline()
+        pipe.get(key)
+        results = await pipe.execute()
+        raw = results[0]
+
         if not raw:
             return
+
         data = json.loads(raw)
         data["messages"].append({"role": role, "content": content})
         await r.setex(key, SESSION_TTL, json.dumps(data))

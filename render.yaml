@@ -12,19 +12,29 @@ services:
         value: 3.11
       - key: DATABASE_CONNECTION_STRING
         sync: false
-      - key: LLM_API_KEY
-        sync: false
       - key: JWT_SECRET
         generateValue: true
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_MODEL
+        sync: false
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
-      - key: RESEND_API_KEY
+      - key: BREVO_API_KEY
         sync: false
-      - key: RESEND_FROM_EMAIL
+      - key: BREVO_FROM_EMAIL
         sync: false
-    healthCheckPath: /health
+      - key: BREVO_FROM_NAME
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+    healthCheckPath: /api/health
 
   - type: worker
     name: ai-recruiter-worker
@@ -39,13 +49,25 @@ services:
         value: 3.11
       - key: DATABASE_CONNECTION_STRING
         sync: false
+      - key: JWT_SECRET
+        generateValue: true
       - key: LLM_API_KEY
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_MODEL
         sync: false
       - key: UPSTASH_REDIS_REST_URL
         sync: false
       - key: UPSTASH_REDIS_REST_TOKEN
         sync: false
-      - key: RESEND_API_KEY
+      - key: BREVO_API_KEY
         sync: false
-      - key: RESEND_FROM_EMAIL
+      - key: BREVO_FROM_EMAIL
+        sync: false
+      - key: BREVO_FROM_NAME
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: CORS_ORIGINS
         sync: false

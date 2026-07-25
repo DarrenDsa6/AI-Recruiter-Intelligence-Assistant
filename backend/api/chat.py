@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from uuid import UUID
@@ -60,7 +61,9 @@ async def chat_stream(
 
     stored_data = await vector_store.get_by_resume(db, str(resume_id))
     if not stored_data or not stored_data.get("documents"):
-        return ErrorResponse(error="Resume not found")
+        async def err_gen():
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Resume not found'})}\n\n"
+        return StreamingResponse(err_gen(), media_type="text/event-stream")
 
     all_text = " ".join(stored_data["documents"])
     jd_text = report.jd_text or ""
@@ -68,7 +71,7 @@ async def chat_stream(
 
     history = await session_store.get_conversation_history(session_key)
 
-    query_embedding = embedder.embed_documents([request.message])[0]
+    query_embedding = (await asyncio.to_thread(embedder.embed_documents, [request.message]))[0]
     rag_results = await vector_store.query_by_resume(db, str(resume_id), query_embedding, top_k=5)
 
     rag_docs = []
@@ -103,8 +106,7 @@ async def chat_stream(
             full_content = ""
             async for token in llm_client.stream_chat(messages):
                 full_content += token
-                sanitized = sanitize_output(full_content)
-                yield f"data: {json.dumps({'type': 'text', 'content': sanitized})}\n\n"
+                yield f"data: {json.dumps({'type': 'text', 'content': full_content})}\n\n"
 
             final = sanitize_output(full_content)
             await session_store.add_message(session_key, "assistant", final)
@@ -112,6 +114,6 @@ async def chat_stream(
 
         except Exception as e:
             logger.error(f"Chat stream error: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': 'An internal error occurred. Please try again.'})}\n\n"
 
     return StreamingResponse(generator(), media_type="text/event-stream")

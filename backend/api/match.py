@@ -35,9 +35,11 @@ async def match_job_description(
 
     redis = await get_redis()
     rate_key = f"match_rate:{user_id}"
-    count = await redis.incr(rate_key)
-    if count == 1:
-        await redis.expire(rate_key, RATE_LIMIT_MATCHES_WINDOW_SECONDS)
+    pipe = redis.pipeline()
+    pipe.incr(rate_key)
+    pipe.expire(rate_key, RATE_LIMIT_MATCHES_WINDOW_SECONDS)
+    results = await pipe.execute()
+    count = results[0]
     if count > RATE_LIMIT_MATCHES_MAX:
         raise HTTPException(
             status_code=429,
@@ -103,16 +105,21 @@ async def list_reports(
     reports = result.scalars().all()
 
     items = []
-    for r in reports:
+    resume_ids = [r.resume_id for r in reports]
+    if resume_ids:
         resume_result = await db.execute(
-            select(MasterResume.filename).where(MasterResume.id == r.resume_id)
+            select(MasterResume.id, MasterResume.filename).where(MasterResume.id.in_(resume_ids))
         )
-        filename = resume_result.scalar_one_or_none()
+        filename_map = {row[0]: row[1] for row in resume_result.all()}
+    else:
+        filename_map = {}
+    for r in reports:
         items.append({
             "id": r.id,
+            "resume_id": r.resume_id,
             "status": r.status,
             "jd_text": r.jd_text[:100] + "..." if len(r.jd_text) > 100 else r.jd_text,
-            "filename": filename,
+            "filename": filename_map.get(r.resume_id),
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "completed_at": r.completed_at.isoformat() if r.completed_at else None,
         })
@@ -137,6 +144,7 @@ async def get_report(
 
     return {
         "id": report.id,
+        "resume_id": report.resume_id,
         "status": report.status,
         "jd_text": report.jd_text,
         "match_result": report.match_result,
@@ -191,15 +199,22 @@ async def stream_report_status(
         return StreamingResponse(immediate(), media_type="text/event-stream")
 
     async def poll_status():
-        while True:
+        max_polls = 150
+        polls = 0
+        while polls < max_polls:
             await asyncio.sleep(2)
+            polls += 1
             async with db_module.async_session_factory() as poll_db:
                 result = await poll_db.execute(
-                    select(TailoringReport.status).where(TailoringReport.id == report_id)
+                    select(TailoringReport.status).where(
+                        TailoringReport.id == report_id,
+                        TailoringReport.user_id == user_id,
+                    )
                 )
                 status = result.scalar_one_or_none()
                 if status in ("completed", "failed"):
                     yield f"data: {json.dumps({'status': status})}\n\n"
-                    break
+                    return
+        yield f"data: {json.dumps({'status': 'timeout'})}\n\n"
 
     return StreamingResponse(poll_status(), media_type="text/event-stream")

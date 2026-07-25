@@ -59,7 +59,6 @@ def validate_file_size(content: bytes) -> None:
 def validate_page_count(doc) -> None:
     page_count = len(doc)
     if page_count > UPLOAD_MAX_PAGES:
-        doc.close()
         raise HTTPException(
             status_code=422,
             detail=f"PDF has {page_count} pages. Maximum is {UPLOAD_MAX_PAGES} pages.",

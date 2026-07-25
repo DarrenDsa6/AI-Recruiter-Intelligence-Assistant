@@ -1,9 +1,11 @@
+import hmac
 import logging
 import random
 import string
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.dependencies import get_current_user
@@ -21,6 +23,8 @@ router = APIRouter()
 OTP_LENGTH = 6
 OTP_TTL_SECONDS = 300
 OTP_RATE_LIMIT_MAX = 3
+ANON_RATE_LIMIT_MAX = 5
+ANON_RATE_LIMIT_WINDOW = 3600
 
 
 def _generate_otp() -> str:
@@ -34,10 +38,14 @@ async def request_otp(
 ):
     redis = await get_redis()
 
-    rate_key = f"otp_rate:{body.email}"
-    count = await redis.incr(rate_key)
-    if count == 1:
-        await redis.expire(rate_key, RATE_LIMIT_WINDOW_SECONDS)
+    normalized_email = body.email.strip().lower()
+
+    rate_key = f"otp_rate:{normalized_email}"
+    pipe = redis.pipeline()
+    pipe.incr(rate_key)
+    pipe.expire(rate_key, RATE_LIMIT_WINDOW_SECONDS)
+    results = await pipe.execute()
+    count = results[0]
     if count > OTP_RATE_LIMIT_MAX:
         raise HTTPException(
             status_code=429,
@@ -45,14 +53,14 @@ async def request_otp(
         )
 
     otp = _generate_otp()
-    otp_key = f"otp:{body.email}"
+    otp_key = f"otp:{normalized_email}"
     await redis.setex(otp_key, OTP_TTL_SECONDS, otp)
 
-    sent = await brevo_email.send_otp(body.email, otp)
+    sent = await brevo_email.send_otp(normalized_email, otp)
     if not sent:
-        logger.error(f"Failed to send OTP email to {body.email}")
+        logger.error(f"Failed to send OTP email to {normalized_email}")
 
-    logger.info(f"OTP sent to {body.email}")
+    logger.info(f"OTP sent to {normalized_email}")
     return MessageResponse(message="Verification code sent to your email.")
 
 
@@ -64,28 +72,34 @@ async def verify_otp(
 ):
     redis = await get_redis()
 
-    otp_key = f"otp:{body.email}"
+    normalized_email = body.email.strip().lower()
+    otp_key = f"otp:{normalized_email}"
     stored_otp = await redis.get(otp_key)
 
     if not stored_otp:
         raise HTTPException(status_code=400, detail="OTP expired or not found. Please request a new code.")
 
-    if body.otp != stored_otp:
+    if not hmac.compare_digest(body.otp, stored_otp):
         raise HTTPException(status_code=400, detail="Invalid verification code.")
 
     await redis.delete(otp_key)
 
-    result = await db.execute(select(User).where(User.email == body.email))
+    result = await db.execute(select(User).where(User.email == normalized_email))
     user = result.scalar_one_or_none()
 
     if not user:
-        user = User(email=body.email)
+        user = User(email=normalized_email)
         db.add(user)
-        await db.commit()
-        await db.refresh(user)
-        logger.info(f"New user created: {body.email}")
+        try:
+            await db.commit()
+            await db.refresh(user)
+        except IntegrityError:
+            await db.rollback()
+            result = await db.execute(select(User).where(User.email == normalized_email))
+            user = result.scalar_one()
+        logger.info(f"New user created: {normalized_email}")
     else:
-        logger.info(f"Existing user logged in: {body.email}")
+        logger.info(f"Existing user logged in: {normalized_email}")
 
     token = create_access_token(str(user.id), user.email)
     response.set_cookie(
@@ -103,6 +117,16 @@ async def verify_otp(
 @router.post("/auth/anonymous", response_model=AuthResponse)
 async def anonymous_login(response: Response, db: AsyncSession = Depends(get_db)):
     import uuid
+
+    redis = await get_redis()
+    rate_key = "anon_rate:global"
+    pipe = redis.pipeline()
+    pipe.incr(rate_key)
+    pipe.expire(rate_key, ANON_RATE_LIMIT_WINDOW)
+    results = await pipe.execute()
+    count = results[0]
+    if count > ANON_RATE_LIMIT_MAX:
+        raise HTTPException(status_code=429, detail="Too many anonymous sessions. Please sign in.")
 
     email = f"anon-{uuid.uuid4().hex[:12]}@local.dev"
 
@@ -137,5 +161,11 @@ async def get_me(user_id=Depends(get_current_user), db: AsyncSession = Depends(g
 
 @router.post("/auth/logout")
 async def logout(response: Response):
-    response.delete_cookie("auth_token", path="/")
+    response.delete_cookie(
+        "auth_token",
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="strict",
+    )
     return {"message": "Logged out"}

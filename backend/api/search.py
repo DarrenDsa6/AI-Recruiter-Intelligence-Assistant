@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from uuid import UUID
 
@@ -37,9 +38,9 @@ async def search_documents(
     try:
         stored_data = await vector_store.get_by_resume(db, resume_id)
         if not stored_data or not stored_data.get("documents"):
-            return {"error": "Session not found"}
+            raise HTTPException(status_code=404, detail="No documents found for this resume")
 
-        query_emb = embedder.get_embeddings([query])[0]
+        query_emb = (await asyncio.to_thread(embedder.get_embeddings, [query]))[0]
         doc_embeddings = stored_data.get("embeddings", [])
         docs = stored_data.get("documents", [])
 
@@ -55,4 +56,4 @@ async def search_documents(
         raise
     except Exception as e:
         logger.error(f"Search failed: {e}")
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail="Search failed. Please try again.")

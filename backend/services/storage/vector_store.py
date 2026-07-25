@@ -51,20 +51,21 @@ class VectorStoreService:
 
     async def query_by_resume(self, db: AsyncSession, resume_id, query_embedding, top_k=5):
         rid = UUID(resume_id) if isinstance(resume_id, str) else resume_id
+        distance_col = ResumeChunk.embedding.cosine_distance(query_embedding).label("distance")
         result = await db.execute(
-            select(ResumeChunk)
+            select(ResumeChunk, distance_col)
             .where(ResumeChunk.resume_id == rid)
-            .order_by(ResumeChunk.embedding.cosine_distance(query_embedding))
+            .order_by(distance_col)
             .limit(top_k)
         )
-        chunks = result.scalars().all()
-        if not chunks:
+        rows = result.all()
+        if not rows:
             return {"documents": [], "distances": [], "metadatas": []}
 
         return {
-            "documents": [[c.text for c in chunks]],
-            "distances": [[0.0 for _ in chunks]],
-            "metadatas": [[{"skills": c.skills or "", "chunk_index": c.chunk_index} for c in chunks]],
+            "documents": [[row[0].text for row in rows]],
+            "distances": [[float(row[1]) for row in rows]],
+            "metadatas": [[{"skills": row[0].skills or "", "chunk_index": row[0].chunk_index} for row in rows]],
         }
 
     async def get_resume_text(self, db: AsyncSession, resume_id) -> str:
@@ -80,6 +81,7 @@ class VectorStoreService:
     async def delete_by_resume(self, db: AsyncSession, resume_id) -> int:
         rid = UUID(resume_id) if isinstance(resume_id, str) else resume_id
         result = await db.execute(delete(ResumeChunk).where(ResumeChunk.resume_id == rid))
+        await db.flush()
         return result.rowcount
 
 

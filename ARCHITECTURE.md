@@ -14,9 +14,11 @@ User enters email
         ▼
 POST /api/auth/request-otp
         │
+        ├── Normalize email (lowercase)
         ├── Generate 6-digit code
         ├── Store in Redis: otp:{email} (TTL 300s)
-        ├── Rate limit: otp_rate:{email} (3/5min)
+        ├── Rate limit: otp_rate:{email} (3/5min via atomic Redis pipeline)
+        ├── Anonymous login rate limit: 5 requests/hr
         └── Send via Brevo email
         │
         ▼
@@ -25,7 +27,7 @@ User enters code
         ▼
 POST /api/auth/verify-otp
         │
-        ├── Compare against Redis key
+        ├── Timing-safe comparison via hmac.compare_digest()
         ├── Upsert user in PostgreSQL
         └── Set HttpOnly, Secure, SameSite=Strict cookie containing JWT
         │
@@ -101,13 +103,19 @@ POST /api/match (authenticated)
 ```
 Worker starts, connects to Redis + PostgreSQL
         │
+        ├── Consumer group name: hostname-pid (unique per instance)
+        │
         ├── Load saved stream position from Redis (worker:last_stream_id)
         │   └── If no saved position: flush stale stream, start from latest ("$")
         │
         ├── Trim stale stream entries (XTRIM MAXLEN ~50)
         │
         ▼
-XREAD from "tailoring-jobs" (polls every 10s)
+XREAD from "tailoring-jobs" + "urgent-jobs" (polls every 10s, both streams each iteration)
+        │
+        ├── xclaim with min_idle_time=60000ms (1 minute)
+        │   └── Pending recovery: XPENDING → fetch actual msg IDs → XCLAIM (not hardcoded "0-0")
+        ├── Graceful handling of missing report_id (skip + log)
         │
         ▼
 process_job(payload):
@@ -147,9 +155,9 @@ process_job(payload):
 
     On failure:
         ├── Rollback failed transaction
-        ├── Mark report as "failed" via fresh DB session
+        ├── Mark report as "failed" via fresh DB session (generic error message stored in DB)
         ├── Publish failed status to Redis Pub/Sub channel
-        ├── Retry with re-enqueue (max 3 attempts per report)
+        ├── Retry with re-enqueue (max 3 attempts per report, retries read from payload)
         └── Idempotency prevents duplicate processing on restart
 ```
 
@@ -158,10 +166,12 @@ process_job(payload):
 ```
 Dashboard mounts → GET /api/reports
         │
-        └── List all reports for authenticated user (PostgreSQL)
+        └── Bulk fetch all reports for authenticated user (IN clause, single query)
 
 Dashboard connects via SSE → GET /api/reports/:report_id/stream
         │
+        ├── Authorization: poll query includes user_id for ownership check
+        ├── 5-minute timeout (150 polls × 2s intervals)
         ├── FastAPI listens to Redis Pub/Sub channel "report_completed:{report_id}"
         ├── Status pushed instantly to client upon worker completion
         ├── status == "completed" → render full results:
@@ -185,13 +195,12 @@ POST /api/chat/stream (authenticated)
         │
         ├── LAYER 5: Query Classification
         │     ├── Recruitment keyword matching (14 categories)
-        │     ├── Short message bypass (<= 3 words)
-        │     └── Reject off-topic questions
+        │     └── Reject off-topic questions (threshold: 1 category match)
         │
         ├── LAYER 6: Input Guardrails
         │     ├── Validate message length (max 2000 chars)
         │     ├── Prompt injection detection (regex + LLM, two-tier)
-        │     └── Rate limiting (50 msgs/session/hour via Redis)
+        │     └── Rate limiting (50 msgs/session/hour via Redis atomic pipeline)
         │
         ├── Fetch report → get jd_text + github_analysis
         ├── Load resume chunks from PostgreSQL (resume_chunks, pgvector cosine search)
@@ -220,7 +229,7 @@ POST /api/chat/stream (authenticated)
 
 ```
 Upload Flow:                          Chat Flow:
-─────────────                         ──────────
+───────────                           ──────────
 1. File validation                    5. Query classification
    (magic bytes, size, pages)            (recruitment keyword matching)
 2. Text validation                    6. Input guardrails
@@ -237,6 +246,20 @@ JD Submission:                           (code/URL/markdown stripping)
     rate limit: 5/day/user)
 ```
 
+### Additional Security Measures
+
+| Measure | Description |
+|---------|-------------|
+| **Timing-safe OTP comparison** | `hmac.compare_digest()` prevents timing attacks on OTP verification |
+| **Anonymous login rate limiting** | 5 anonymous login attempts per hour per IP |
+| **Email normalization** | Lowercase normalization prevents duplicate accounts from case differences |
+| **CORS** | Restricted to specific allowed origins, methods, and headers |
+| **Cookie flags** | HttpOnly, Secure, SameSite=Strict on auth cookies (including deletion) |
+| **Generic error messages** | Database stores sanitized error messages; internal details never exposed |
+| **Exception sanitization** | Chat and API exceptions stripped of internal details before response |
+| **SSE authorization** | Poll query includes user_id; 5-minute timeout prevents infinite polling |
+| **GitHub token security** | Token sent via X-GitHub-Token header (not query parameter); username validated with regex |
+
 ---
 
 ## Guardrails Package
@@ -248,7 +271,7 @@ services/guardrails/
 ├── moderation.py      # Content moderation patterns
 ├── query.py           # Query classification + recruitment validation
 ├── output.py          # Output sanitization (code/URL/markdown stripping)
-├── rate_limit.py      # Redis-based rate limiting
+├── rate_limit.py      # Redis-based rate limiting (atomic incr+expire pipeline)
 ├── upload.py          # Upload/JD validation helpers
 └── pii.py             # PII scrubbing (emails, phones, SSNs, credit cards, IPs, addresses)
 ```
@@ -361,16 +384,16 @@ Category Breakdown:
 | **Classification** | Two-tier verification that text is a JD |
 | **Injection scan** | Same two-tier detection as uploads |
 | **Content moderation** | Same moderation scan as uploads |
-| **Length limit** | 50,000 characters maximum |
+| **Length limit** | 50,000 characters maximum (`MatchRequest.jd_text` schema) |
 | **Rate limit** | Max 5 tailoring jobs per user per day |
 
 ### Chat Guardrails (3 layers)
 
 | Layer | Description |
 |-------|-------------|
-| **Query classification** | Recruitment keyword matching (14 categories). Short messages (<=3 words) bypass |
-| **Input validation** | Message length (max 2000 chars), two-tier injection detection (regex + LLM), rate limiting (50 msgs/session/hour) |
-| **Output sanitization** | Code block stripping, URL/link removal, whitespace cleanup |
+| **Query classification** | Recruitment keyword matching (14 categories). Off-topic threshold: 1 category match |
+| **Input validation** | Message length (max 2000 chars, `ChatRequest.message` schema), two-tier injection detection (regex + LLM), rate limiting (50 msgs/session/hour via atomic Redis pipeline) |
+| **Output sanitization** | Code block stripping, URL/link removal, whitespace cleanup. Exceptions sanitized (no internal details exposed) |
 
 ### Prompt Hardening
 
@@ -385,14 +408,17 @@ Category Breakdown:
 
 | Endpoint | Check |
 |----------|-------|
+| `POST /api/auth/request-otp` | Anonymous (rate-limited: 3/5min OTP, 5/hr anonymous) |
+| `POST /api/auth/verify-otp` | Anonymous (timing-safe OTP comparison via `hmac.compare_digest`) |
 | `POST /api/upload` | `get_current_user` (JWT) |
 | `POST /api/match` | `get_current_user` + `MasterResume.user_id == user_id` |
 | `POST /api/chat/stream` | `get_current_user` + `TailoringReport.user_id == user_id` |
 | `POST /api/github/{id}/{user}` | `get_current_user` + `MasterResume.user_id == user_id` |
 | `GET /api/search/{id}` | `get_current_user` + `MasterResume.user_id == user_id` |
 | `DELETE /api/session/{id}` | `get_current_user` + `MasterResume.user_id == user_id` |
-| `GET /api/reports` | `get_current_user` (filters by user_id) |
+| `GET /api/reports` | `get_current_user` (bulk fetch via IN clause, filters by user_id) |
 | `GET /api/reports/{id}` | `get_current_user` + `TailoringReport.user_id == user_id` |
+| `GET /api/reports/{id}/stream` | `get_current_user` + `TailoringReport.user_id == user_id` (user_id in poll query) |
 
 ---
 
@@ -433,7 +459,7 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 
 2. **Candidate-facing, not recruiter-facing.** The UX is designed for job seekers optimizing their own resumes. LLM prompts frame feedback as a career coach, not a gatekeeper.
 
-3. **Async job queue via Redis Streams.** Jobs are submitted instantly (202 Accepted) and processed in a separate worker. Stream trimmed to ~50 entries. Idempotency check skips already-processed reports on restart. Stream position persisted in Redis across restarts.
+3. **Async job queue via Redis Streams.** Jobs are submitted instantly (202 Accepted) and processed in a separate worker. Both `tailoring-jobs` and `urgent-jobs` streams checked each loop iteration (no starvation). Stream trimmed to ~50 entries. Idempotency check skips already-processed reports on restart. Stream position persisted in Redis across restarts.
 
 4. **Resume_id keying with SHA-256 dedup.** Embeddings are keyed by resume_id (not session_id). If a user uploads the same PDF again, the existing embeddings are reused -- no re-processing.
 
@@ -441,7 +467,7 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 
 6. **Redis-backed session store.** Conversation history for chat is stored in Redis with TTL. Survives server restarts, shared between FastAPI and worker, auto-expires.
 
-7. **Email OTP via Brevo.** Simple, branded OTP emails. Rate limiting (3/5min) prevents abuse. No password storage or reset flows.
+7. **Email OTP via Brevo.** Simple, branded OTP emails. Rate limiting (3/5min) prevents abuse. Anonymous login rate-limited (5/hr). No password storage or reset flows.
 
 8. **Centralized config via Pydantic BaseSettings.** All environment variables managed in `config/settings.py`. No scattered `os.environ` calls.
 
@@ -465,32 +491,49 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 
 - PostgreSQL + pgvector for data AND embeddings (single DB)
 - Redis-backed session store (survives restarts, auto-expires)
-- Redis Streams for async job processing with xread (no consumer groups)
+- Redis Streams for async job processing with xread (consumer groups, hostname-pid naming)
+- Both `tailoring-jobs` and `urgent-jobs` streams checked each iteration (no starvation)
 - Stream trimming (XTRIM MAXLEN ~50) prevents unbounded message accumulation
 - Stream position persisted in Redis (worker:last_stream_id) survives restarts
 - Stale stream flushed on first boot (no saved position)
 - Idempotency check prevents duplicate processing on worker restart
 - Email OTP + report notifications via Brevo
-- JWT in HttpOnly cookie (httponly, secure, samesite=strict)
+- JWT in HttpOnly cookie (httponly, secure, samesite=strict on set AND delete)
 - SHA-256 resume deduplication
 - JD embedding caching (Redis, SHA-256 key, 24h TTL)
 - TTL auto-cleanup (7d chunks, 14d reports, orphaned resumes)
 - Skill derivation at query time (5% storage savings)
 - PII scrubbing before LLM calls (emails, phones, addresses)
-- SSE streaming for job status (instant push, no polling)
+- SSE streaming for job status (instant push, no polling, 5-min timeout)
 - Layout-aware PDF parsing (preserves multi-column flow)
 - Daily match rate limiting (5/day/user)
+- Atomic Redis pipelines for all rate limiters (incr+expire in single call)
 - Prometheus metrics (request latency, error rates, throughput)
 - Health check endpoint with DB + Redis connectivity checks
 - Worker depends on backend healthcheck (docker-compose)
 - Graceful shutdown (DB pool, Redis connections)
 - Retry with re-enqueue in worker (3 attempts, fresh session on error)
+- xclaim with min_idle_time=60000ms for orphaned job recovery
+- Pending recovery via XPENDING → actual msg IDs → XCLAIM (not hardcoded "0-0")
+- Retry counter read from message payload (not outer variable)
+- Missing report_id handled gracefully (skip + log, no crash)
+- Generic error messages stored in DB (internal details never exposed)
 - Multi-layer upload security (validation, two-tier classification, two-tier injection, moderation)
 - JD validation (two-tier classification, injection, moderation, rate limiting)
-- Chat guardrails (query classification, two-tier injection, output sanitization)
-- Rate limiting on chat (50 msgs/session/hour) and OTP (3/5min)
+- Chat guardrails (query classification, two-tier injection, output sanitization, exceptions sanitized)
+- Rate limiting on chat (50 msgs/session/hour), OTP (3/5min), and anonymous login (5/hr)
+- Timing-safe OTP comparison (hmac.compare_digest)
+- CORS restricted to specific origins, methods, and headers
 - Hardened LLM prompts with document delimiters
-- Authorization checks on all resource endpoints
+- Authorization checks on all resource endpoints (including SSE stream with user_id in poll query)
+- Bulk fetch for /reports endpoint (IN clause replaces N+1 queries)
+- Report API responses include resume_id
+- LLM client handles empty choices gracefully
+- Vector store flush before returning on delete_by_resume
+- PyMuPDF double-close prevented; DOCX Document objects cleaned up
+- Embedder returns native Python lists (not numpy arrays); both embed_documents and get_embeddings use normalize_embeddings=True
+- GitHub token sent via X-GitHub-Token header; username validated with regex
+- Schema validation: ChatRequest.message max_length=2000, MatchRequest.jd_text max_length=50000
 - Modular guardrails package (7 focused modules)
 - Explainable scoring with category breakdowns
 - Alembic database migrations

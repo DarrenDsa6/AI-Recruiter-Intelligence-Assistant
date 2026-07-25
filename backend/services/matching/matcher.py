@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -36,10 +37,10 @@ class MatcherService:
             logger.debug(f"JD embedding cache hit: {cache_key}")
             return np.array(json.loads(cached))
 
-        embedding = self.embedding_service.get_embeddings([job_description])[0]
-        await redis.setex(cache_key, JD_EMBEDDING_CACHE_TTL, json.dumps(embedding.tolist()))
+        embedding = (await asyncio.to_thread(self.embedding_service.get_embeddings, [job_description]))[0]
+        await redis.setex(cache_key, JD_EMBEDDING_CACHE_TTL, json.dumps(embedding))
         logger.debug(f"JD embedding cached: {cache_key}")
-        return embedding
+        return np.array(embedding)
 
     async def compute_similarity(self, db, job_description: str, resume_id, redis=None) -> dict:
         stored_data = await self.vector_store.get_by_resume(db, resume_id)
@@ -73,7 +74,7 @@ class MatcherService:
         if redis:
             jd_embedding = await self._get_or_cache_jd_embedding(redis, job_description)
         else:
-            jd_embedding = self.embedding_service.get_embeddings([job_description])[0]
+            jd_embedding = (await asyncio.to_thread(self.embedding_service.get_embeddings, [job_description]))[0]
 
         doc_score = float(cosine_similarity([jd_embedding], [resume_embedding])[0][0])
 
@@ -87,7 +88,7 @@ class MatcherService:
             match_score=final_percent,
         )
 
-        chunk_scores = self._score_chunks(documents, job_description)
+        chunk_scores = await self._score_chunks(documents, job_description)
 
         category_breakdown = self._compute_category_breakdown(
             required_skills=required_skills,
@@ -175,11 +176,11 @@ class MatcherService:
             ),
         }
 
-    def _score_chunks(self, documents: list[str], job_description: str, top_n: int = 3) -> list[dict]:
+    async def _score_chunks(self, documents: list[str], job_description: str, top_n: int = 3) -> list[dict]:
         if not documents:
             return []
-        jd_embedding = self.embedding_service.get_embeddings([job_description])[0]
-        chunk_embeddings = self.embedding_service.get_embeddings(documents)
+        jd_embedding = (await asyncio.to_thread(self.embedding_service.get_embeddings, [job_description]))[0]
+        chunk_embeddings = await asyncio.to_thread(self.embedding_service.get_embeddings, documents)
         scores = [
             {"chunk_index": i, "text": doc[:200], "score": round(float(cosine_similarity([jd_embedding], [emb])[0][0]), 4)}
             for i, (doc, emb) in enumerate(zip(documents, chunk_embeddings))
