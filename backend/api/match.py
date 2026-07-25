@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.dependencies import get_current_user
 from services.database import get_db
 import services.database as db_module
+from services.redis import get_redis
 from services.parsing.classifier import classify_document
 from services.guardrails import validate_jd_text
 from models.report import TailoringReport
