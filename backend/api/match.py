@@ -36,15 +36,10 @@ async def match_job_description(
         f"JD classified as {classification.doc_type} "
         f"(confidence={classification.confidence:.2f}, tier={classification.tier})"
     )
-    if classification.doc_type == "resume":
+    if classification.doc_type == "resume" and classification.confidence >= 0.85:
         raise HTTPException(
             status_code=422,
             detail="The text provided appears to be a resume, not a job description.",
-        )
-    if classification.doc_type == "other":
-        raise HTTPException(
-            status_code=422,
-            detail="The text provided does not appear to be a valid job description.",
         )
 
     result = await db.execute(

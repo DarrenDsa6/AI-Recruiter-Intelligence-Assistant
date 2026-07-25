@@ -6,16 +6,16 @@ logger = logging.getLogger(__name__)
 
 RESUME_SIGNALS = [
     r"\b(resume|curriculum\s+vitae|cv)\b",
-    r"\b(experience|employment|work\s+history)\b",
-    r"\b(education|degree|university|college|gpa)\b",
-    r"\b(skills?|technologies|proficiencies)\b",
-    r"\b(summary|objective|profile)\b",
-    r"\b(certifications?|licenses?|awards?)\b",
-    r"\b(references?|portfolio)\b",
-    r"\b(contact|email|phone|linkedin)\b",
-    r"\b(full\s+stack|backend|frontend|devops|engineer|developer|analyst|manager)\b",
-    r"\b(bachelor|master|phd|b\.?s\.?|m\.?s\.?)\b",
+    r"\b(work\s+history)\b",
+    r"\b(gpa)\b",
+    r"\b(summary|objective|profile)\s*:?\s*\n",
+    r"\b(certifications?|licenses?|awards?)\s*:?\s*\n",
+    r"\b(references?|portfolio)\s*:?\s*\n",
+    r"\b(contact|email|phone|linkedin)\s*:?\s*\S+",
+    r"\b(full\s+stack|backend|frontend|devops)\s+(engineer|developer)\b",
+    r"\b(bachelor|master|phd|b\.?s\.?|m\.?s\.?)\s+(of|in)\b",
     r"\b(\d{4}\s*[-–]\s*(?:present|current|\d{4}))\b",
+    r"\b(led|managed|developed|designed|implemented|built|launched)\b.*\b(team|project|system|application)\b",
 ]
 
 JD_SIGNALS = [
