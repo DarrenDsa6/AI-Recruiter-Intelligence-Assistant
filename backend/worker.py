@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from config.constants import WORKER_STREAM_NAME, WORKER_CONSUMER_GROUP, WORKER_MAX_RETRIES
+from config.constants import WORKER_STREAM_NAME, WORKER_MAX_RETRIES
 from services.database import init_db, close_db, async_session_factory
 from services.redis import get_redis, close_redis
 from services.matching import matcher
@@ -22,7 +22,7 @@ from models.user import User
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [worker] %(name)s: %(message)s")
 logger = logging.getLogger("worker")
 
-CONSUMER_NAME = f"worker-{os.getpid()}"
+LAST_ID = "0"
 
 
 async def process_job(payload: dict, db, redis):
@@ -90,61 +90,56 @@ async def process_job(payload: dict, db, redis):
         raise
 
 
-async def ensure_consumer_group(redis):
-    try:
-        await redis.xgroup_create(WORKER_STREAM_NAME, WORKER_CONSUMER_GROUP, "0", mkstream=True)
-        logger.info(f"Consumer group '{WORKER_CONSUMER_GROUP}' created")
-    except Exception:
-        pass
+def parse_entry(raw_fields):
+    if isinstance(raw_fields, dict):
+        return raw_fields
+    if isinstance(raw_fields, list):
+        return dict(zip(raw_fields[::2], raw_fields[1::2]))
+    return {}
 
 
 async def main():
+    global LAST_ID
     logger.info("Starting worker...")
     await init_db()
     redis = await get_redis()
-    await ensure_consumer_group(redis)
 
-    logger.info(f"Listening on stream '{WORKER_STREAM_NAME}' as '{CONSUMER_NAME}'")
+    logger.info(f"Listening on stream '{WORKER_STREAM_NAME}' with xread (no consumer group)")
 
     while True:
         try:
-            entries = await redis.xreadgroup(
-                WORKER_CONSUMER_GROUP,
-                CONSUMER_NAME,
-                {WORKER_STREAM_NAME: ">"},
-                count=1,
-            )
+            entries = await redis.xread({WORKER_STREAM_NAME: LAST_ID}, count=1)
 
             if not entries:
                 await asyncio.sleep(10)
                 continue
 
             for stream_name, messages in entries:
-                for msg_id, data in messages:
-                    logger.info(f"Raw entry: msg_id={msg_id}, data_type={type(data)}, data={data}")
+                for msg_id, raw_fields in messages:
+                    data = parse_entry(raw_fields)
+                    logger.info(f"Received job: msg_id={msg_id}, data={data}")
+                    LAST_ID = msg_id
 
                     try:
-                        raw_payload = data.get("payload", "{}") if isinstance(data, dict) else data
+                        raw_payload = data.get("payload", "{}")
                         if isinstance(raw_payload, bytes):
                             raw_payload = raw_payload.decode("utf-8")
                         payload = json.loads(raw_payload)
-                        retries = int(data.get("retries", 0)) if isinstance(data, dict) else 0
+                        retries = int(data.get("retries", 0))
                     except Exception as parse_err:
-                        logger.error(f"Failed to parse entry: {parse_err}, raw={data}")
-                        await redis.xack(WORKER_STREAM_NAME, WORKER_CONSUMER_GROUP, msg_id)
+                        logger.error(f"Failed to parse entry: {parse_err}, raw_fields={raw_fields}")
                         continue
 
                     try:
                         async with async_session_factory() as db:
                             await process_job(payload, db, redis)
-                        await redis.xack(WORKER_STREAM_NAME, WORKER_CONSUMER_GROUP, msg_id)
                     except Exception as e:
                         logger.error(f"Attempt {retries + 1} failed: {e}")
                         if retries < WORKER_MAX_RETRIES - 1:
-                            await redis.xadd(WORKER_STREAM_NAME, "*", {**data, "retries": str(retries + 1)} if isinstance(data, dict) else {"payload": json.dumps(payload), "retries": str(retries + 1)})
+                            retry_payload = json.dumps({**payload, "retries": retries + 1})
+                            await redis.xadd(WORKER_STREAM_NAME, "*", {"payload": retry_payload})
                         else:
-                            logger.error(f"Max retries reached for {msg_id}")
-                        await redis.xack(WORKER_STREAM_NAME, WORKER_CONSUMER_GROUP, msg_id)
+                            logger.error(f"Max retries reached for report={payload.get('report_id')}")
 
         except asyncio.CancelledError:
             logger.info("Worker shutting down...")
