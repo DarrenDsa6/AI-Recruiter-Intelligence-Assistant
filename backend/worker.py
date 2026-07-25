@@ -142,8 +142,8 @@ async def main():
     redis = await get_redis()
 
     for key, name, var_attr in [
-        (LAST_ID_KEY_URGENT, "urgent", "urgent"),
-        (LAST_ID_KEY_EMAIL, "email", "email"),
+        (LAST_ID_KEY_URGENT, WORKER_STREAM_URGENT, "urgent"),
+        (LAST_ID_KEY_EMAIL, WORKER_STREAM_EMAIL, "email"),
     ]:
         saved = await redis.get(key)
         if saved:
@@ -154,11 +154,20 @@ async def main():
                 LAST_ID_EMAIL = val
             logger.info(f"Resumed {name} stream from position: {val}")
         else:
+            start_id = "0-0"
+            try:
+                entries = await redis.xrevrange(name, count=1)
+                if entries:
+                    last_id = entries[0][0] if isinstance(entries[0], (list, tuple)) else entries[0]
+                    ms = int(last_id.split("-")[0])
+                    start_id = f"{ms - 1}-0"
+            except Exception:
+                pass
             if var_attr == "urgent":
-                LAST_ID_URGENT = "0"
+                LAST_ID_URGENT = start_id
             else:
-                LAST_ID_EMAIL = "0"
-            logger.info(f"No saved position for {name} stream — starting from beginning")
+                LAST_ID_EMAIL = start_id
+            logger.info(f"No saved position for {name} — starting from: {start_id}")
 
     try:
         await redis.xtrim(WORKER_STREAM_URGENT, maxlen=50)
