@@ -116,7 +116,7 @@ async def main():
             )
 
             if not entries:
-                await asyncio.sleep(5)
+                await asyncio.sleep(60)
                 continue
 
             for stream_name, messages in entries:
