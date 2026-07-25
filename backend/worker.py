@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from config.constants import WORKER_STREAM_NAME, WORKER_MAX_RETRIES
+from config.constants import WORKER_STREAM_URGENT, WORKER_STREAM_EMAIL, WORKER_MAX_RETRIES
 from services.database import init_db, close_db
 import services.database as db_module
 from services.redis import get_redis, close_redis
@@ -26,8 +26,12 @@ from models.user import User
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [worker] %(name)s: %(message)s")
 logger = logging.getLogger("worker")
 
-LAST_ID_KEY = "worker:last_stream_id"
+LAST_ID_KEY_URGENT = "worker:last_stream_id:urgent"
+LAST_ID_KEY_EMAIL = "worker:last_stream_id:email"
 CLEANUP_INTERVAL = 100
+
+LAST_ID_URGENT = "0"
+LAST_ID_EMAIL = "0"
 
 
 async def process_job(payload: dict, db, redis):
@@ -131,36 +135,46 @@ def parse_entry(raw_fields):
 
 
 async def main():
-    global LAST_ID
+    global LAST_ID_URGENT, LAST_ID_EMAIL
     logger.info("Starting worker...")
     await init_db()
     redis = await get_redis()
 
-    last_id_raw = await redis.get(LAST_ID_KEY)
-    if last_id_raw:
-        LAST_ID = last_id_raw.decode() if isinstance(last_id_raw, bytes) else str(last_id_raw)
-        logger.info(f"Resumed from stream position: {LAST_ID}")
-    else:
-        LAST_ID = "$"
-        logger.info("No saved position — starting from latest stream entry, trimming old messages")
-        try:
-            await redis.delete(WORKER_STREAM_NAME)
-            logger.info("Flushed stale stream entries")
-        except Exception:
-            pass
+    for key, name, var_attr in [
+        (LAST_ID_KEY_URGENT, "urgent", "urgent"),
+        (LAST_ID_KEY_EMAIL, "email", "email"),
+    ]:
+        saved = await redis.get(key)
+        if saved:
+            val = saved.decode() if isinstance(saved, bytes) else str(saved)
+            if var_attr == "urgent":
+                LAST_ID_URGENT = val
+            else:
+                LAST_ID_EMAIL = val
+            logger.info(f"Resumed {name} stream from position: {val}")
+        else:
+            if var_attr == "urgent":
+                LAST_ID_URGENT = "$"
+            else:
+                LAST_ID_EMAIL = "$"
+            logger.info(f"No saved position for {name} stream — starting from latest")
 
     try:
-        await redis.xtrim(WORKER_STREAM_NAME, maxlen=50)
-        logger.info("Trimmed stream on startup")
+        await redis.xtrim(WORKER_STREAM_URGENT, maxlen=50)
+        await redis.xtrim(WORKER_STREAM_EMAIL, maxlen=50)
+        logger.info("Trimmed streams on startup")
     except Exception:
         pass
 
-    logger.info(f"Listening on stream '{WORKER_STREAM_NAME}' with xread (no consumer group)")
+    logger.info(f"Listening on streams '{WORKER_STREAM_URGENT}' (priority) and '{WORKER_STREAM_EMAIL}' (email)")
 
     poll_count = 0
     while True:
         try:
-            entries = await redis.xread({WORKER_STREAM_NAME: LAST_ID}, count=1)
+            entries = await redis.xread(
+                {WORKER_STREAM_URGENT: LAST_ID_URGENT, WORKER_STREAM_EMAIL: LAST_ID_EMAIL},
+                count=1,
+            )
 
             if not entries:
                 poll_count += 1
@@ -176,15 +190,26 @@ async def main():
                 await asyncio.sleep(10)
                 continue
 
+            found_job = False
             for stream_name, messages in entries:
                 for msg_id, raw_fields in messages:
+                    found_job = True
                     data = parse_entry(raw_fields)
-                    logger.info(f"Received job: msg_id={msg_id}, data={data}")
-                    LAST_ID = msg_id
-                    try:
-                        await redis.set(LAST_ID_KEY, msg_id)
-                    except Exception:
-                        pass
+                    is_urgent = stream_name == WORKER_STREAM_URGENT
+                    logger.info(f"Received job: msg_id={msg_id}, stream={'urgent' if is_urgent else 'email'}")
+
+                    if is_urgent:
+                        LAST_ID_URGENT = msg_id
+                        try:
+                            await redis.set(LAST_ID_KEY_URGENT, msg_id)
+                        except Exception:
+                            pass
+                    else:
+                        LAST_ID_EMAIL = msg_id
+                        try:
+                            await redis.set(LAST_ID_KEY_EMAIL, msg_id)
+                        except Exception:
+                            pass
 
                     try:
                         raw_payload = data.get("payload", "{}")
@@ -203,14 +228,21 @@ async def main():
                         logger.error(f"Attempt {retries + 1} failed: {e}")
                         if retries < WORKER_MAX_RETRIES - 1:
                             retry_payload = json.dumps({**payload, "retries": retries + 1})
-                            await redis.xadd(WORKER_STREAM_NAME, "*", {"payload": retry_payload})
+                            retry_stream = WORKER_STREAM_URGENT if is_urgent else WORKER_STREAM_EMAIL
+                            await redis.xadd(retry_stream, "*", {"payload": retry_payload})
                         else:
                             logger.error(f"Max retries reached for report={payload.get('report_id')}")
 
                     try:
-                        await redis.xtrim(WORKER_STREAM_NAME, maxlen=50)
+                        await redis.xtrim(WORKER_STREAM_URGENT, maxlen=50)
+                        await redis.xtrim(WORKER_STREAM_EMAIL, maxlen=50)
                     except Exception:
                         pass
+
+                    break
+
+                if found_job:
+                    break
 
         except asyncio.CancelledError:
             logger.info("Worker shutting down...")

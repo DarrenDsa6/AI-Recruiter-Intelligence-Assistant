@@ -15,6 +15,8 @@ DB_MAX_OVERFLOW = 10
 WORKER_MAX_RETRIES = 3
 WORKER_RETRY_DELAYS = [1, 2, 4]
 WORKER_STREAM_NAME = "tailoring-jobs"
+WORKER_STREAM_URGENT = "tailoring-jobs:urgent"
+WORKER_STREAM_EMAIL = "tailoring-jobs:email"
 WORKER_CONSUMER_GROUP = "tailoring-workers"
 
 DOC_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"

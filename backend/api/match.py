@@ -17,12 +17,10 @@ from services.guardrails import validate_jd_text
 from models.report import TailoringReport
 from models.resume import MasterResume
 from schemas.match import MatchRequest, MatchAccepted
-from config.constants import RATE_LIMIT_MATCHES_MAX, RATE_LIMIT_MATCHES_WINDOW_SECONDS
+from config.constants import RATE_LIMIT_MATCHES_MAX, RATE_LIMIT_MATCHES_WINDOW_SECONDS, WORKER_STREAM_URGENT, WORKER_STREAM_EMAIL
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-JOB_STREAM = "tailoring-jobs"
 
 
 @router.post("/match", response_model=MatchAccepted, status_code=202)
@@ -84,8 +82,9 @@ async def match_job_description(
         "jd_text": body.jd_text,
         "send_email": body.send_email,
     })
-    entry_id = await redis.xadd(JOB_STREAM, "*", {"payload": job_payload})
-    logger.info(f"Stream entry id: {entry_id}")
+    job_stream = WORKER_STREAM_EMAIL if body.send_email else WORKER_STREAM_URGENT
+    entry_id = await redis.xadd(job_stream, "*", {"payload": job_payload})
+    logger.info(f"Stream entry id: {entry_id} (stream={job_stream})")
 
     logger.info(f"Job queued: report={report.id} resume={body.resume_id}")
     return MatchAccepted(report_id=report.id)
