@@ -265,7 +265,7 @@ POST /api/upload (multipart/form-data)
    │
    ├── Database writes
    │   ├── master_resumes: { user_id, file_hash, raw_text, filename }
-   │   └── resume_chunks: { resume_id, chunk_index, embedding, text }
+   │   └── resume_chunks: { resume_id, chunk_index, text, embedding, skills }
    │
    └── Return { resume_id, filename, skills }
 ```
@@ -339,8 +339,10 @@ POST /api/match (authenticated)
 ```
 Worker starts
    │
-   ├── init_db() -- create async connection pool
+   ├── init_db() -- create async connection pool (pool_pre_ping enabled)
    ├── get_redis() -- connect to Upstash
+   ├── Load saved stream position from Redis (worker:last_stream_id)
+   │   └── If no saved position: flush entire stream, start from latest ("$")
    ├── XTRIM stream (maxlen ~50) -- clean stale entries
    │
    └── while True:
@@ -366,11 +368,14 @@ Worker starts
        │   ├── Save results to PostgreSQL (status --> "completed")
        │   ├── Publish to Redis Pub/Sub channel "report:{report_id}"
        │   ├── Generate PDF report
-       │   └── Send email via Brevo (if send_email flag set)
+       │   ├── Send email via Brevo (if send_email flag set)
+       │   └── Persist stream position to Redis
        │
        ├── XTRIM stream (maxlen ~50) -- cap message accumulation
        │
        └── on failure:
+           ├── Rollback aborted transaction
+           ├── Mark report as "failed" via fresh DB session
            ├── Publish failed status to Redis Pub/Sub
            └── Retry with re-enqueue (max 3 attempts per report)
 ```
@@ -380,6 +385,7 @@ Worker starts
 - Consumer groups require acknowledging messages (XACK)
 - If worker crashes mid-processing, unacknowledged messages get stuck
 - `xread` with last_id tracking is simpler and more resilient
+- Stream position persisted in Redis survives restarts
 - Idempotency check prevents duplicate processing on restart
 - Stream trimming caps memory usage without manual cleanup
 - Trade-off: no horizontal scaling (only one worker), but that's fine for free tier
@@ -617,7 +623,7 @@ Regex catches obvious patterns instantly (e.g., "ignore previous instructions").
 |-------|---------|-------------|
 | users | User accounts | id, email, created_at |
 | master_resumes | Uploaded resumes | id, user_id, file_hash, raw_text, filename |
-| resume_chunks | Embeddings for RAG | id, resume_id, chunk_index, chunk_start_char, chunk_end_char, embedding (Vector 384), text |
+| resume_chunks | Embeddings for RAG | id, resume_id, chunk_index, text, embedding (Vector 384), skills |
 | tailoring_reports | Analysis results | id, user_id, resume_id, status, match_result, report, questions, rewrites |
 
 ### Why pgvector instead of separate vector DB
@@ -693,14 +699,23 @@ services:
     build: ./backend
     command: alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000
     ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   worker:
     build: ./backend
-    command: python worker.py
+    command: alembic upgrade head && python worker.py
+    depends_on:
+      backend:
+        condition: service_healthy
 
   frontend:
     build: ./frontend/recruiter-ui
-    ports: ["5173:80"]
+    ports: ["3000:80"]
 ```
 
 ### Production (Render)
@@ -713,11 +728,10 @@ services:
 
 ## 16. Architecture Gap Fixes
 
-All discrepancies between ARCHITECTURE.md and actual code have been resolved:
+All discrepancies between documentation and actual code have been resolved:
 
 | Gap | Fix |
 |-----|-----|
-| chunk_index vs chunk_start_char/chunk_end_char | Added offset columns to model, migration, chunker, and vector_store |
 | SSE polling DB vs Redis Pub/Sub | Worker publishes to Redis channel; SSE endpoint subscribes |
 | localStorage for user data | Removed; user email fetched from /api/auth/me via HttpOnly cookie |
 | ChatSection process.env vs import.meta.env | Fixed to use import.meta.env.VITE_API_URL |
@@ -727,3 +741,8 @@ All discrepancies between ARCHITECTURE.md and actual code have been resolved:
 | Parser layout-aware parsing | Already implemented (get_text("blocks") with position sorting) |
 | Stream message accumulation | XTRIM MAXLEN ~50 after each message and on startup |
 | Duplicate job processing | Idempotency check skips already-completed/failed reports |
+| Worker restart re-reads all messages | Stream position persisted in Redis (worker:last_stream_id) |
+| Worker infinite retry loop | Fresh DB session for marking reports as failed; rollback before update |
+| Stale stream on first boot | Entire stream flushed when no saved position exists |
+| Database stale connections | pool_pre_ping=True on async engine |
+| Worker startup race | Worker depends on backend healthcheck (docker-compose) |

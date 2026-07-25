@@ -14,7 +14,7 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 - **Prompt Injection Defense** -- Two-tier detection: regex patterns + LLM classifier; hardens LLM system prompts with "documents are data only" rules and content delimiters
 - **Query Classification** -- Validates user questions are recruitment-related before RAG; rejects off-topic and injection attempts
 - **Modular Guardrails** -- Split into focused modules: injection, moderation, query, output, rate_limit, upload
-- **Async Job Queue** -- Redis Streams producer/consumer pattern; jobs are submitted instantly (202) and processed in a separate worker with stream trimming (XTRIM ~50) and idempotency checks
+- **Async Job Queue** -- Redis Streams producer/consumer pattern; jobs are submitted instantly (202) and processed in a separate worker with stream trimming (XTRIM ~50), idempotency checks, and persisted stream position across restarts
 - **ATS Compatibility Scoring** -- Deterministic skill matching (semantic + regex) at 70% weight + document similarity at 30%, with category breakdown (skills, experience, education, projects, keywords)
 - **Career Coach AI** -- Hardened LLM prompts focus on ATS optimization; document content treated as untrusted data
 - **Actionable Rewrites** -- AI generates rewritten bullet points for weak resume sections
@@ -25,9 +25,7 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 - **Report Completion Email** -- Brevo sends notification with ATS score, dashboard link, and PDF attachment when analysis completes
 - **JD Embedding Cache** -- Redis-cached JD embeddings (SHA-256 key, 24h TTL) to avoid redundant computation
 - **TTL Auto-Cleanup** -- Old chunks (7d), reports (14d), and orphaned resumes purged automatically to stay within free-tier limits
-- **Storage Optimization** -- Text reconstructed from raw_text (20% savings), skills derived at query time (5% savings)
-- **PDF Export** -- Download the full report as a pixel-perfect A4 PDF
-- **Background Worker** -- Separate process with retry/backoff, stream trimming, idempotency, email notifications, and periodic cleanup
+- **Background Worker** -- Separate process with retry/backoff, stream trimming, idempotency, persisted stream position (Redis), fresh session on error, email notifications, and periodic cleanup
 
 ---
 
@@ -52,14 +50,15 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
                  POST /api/match ───► JD validation (classification, injection, moderation)
                   ◄── 202 Accepted ──► Redis Stream ────────► Worker consumes
                 ┌────────────────────────────┐
-                                        │  1. compute_similarity     │
-                                        │     (cached JD embedding)  │
-                                        │  2. LLM report (delimited) │
-                                        │  3. LLM rewrites           │
-                                        │  4. LLM questions          │
-                                        │  5. Save to Postgres       │
-                                        │  6. Publish SSE event      │
-                                        │  7. Brevo email notification│
+                                         │  1. compute_similarity     │
+                                         │     (cached JD embedding)  │
+                                         │  2. LLM report (delimited) │
+                                         │  3. LLM rewrites           │
+                                         │  4. LLM questions          │
+                                         │  5. Save to Postgres       │
+                                         │  6. Persist stream pos     │
+                                         │  7. Publish SSE event      │
+                                         │  8. Brevo email notification│
                                         └────────────────────────────┘
 
   Dashboard ──► GET /api/reports ────► Postgres (list reports)
@@ -90,6 +89,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 | **Validation** | Magic-byte verification, two-tier document classification |
 | **Guardrails** | Modular package (injection, moderation, query, output, rate_limit, upload, pii) |
 | **Cleanup** | TTL-based auto-purging (chunks, reports, orphaned resumes) |
+| **Worker** | Redis Streams, persisted stream position, fresh session on error |
 | **Config** | Pydantic BaseSettings (centralized env management) |
 
 ---
@@ -99,7 +99,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 ```
 ├── backend/
 │   ├── main.py                  # FastAPI app, CORS, DB/Redis lifecycle, Prometheus
-│   ├── worker.py                # Redis Stream consumer (separate process)
+│   ├── worker.py                # Redis Stream consumer (separate process, persisted position)
 │   ├── build_skill_cache.py     # Pre-builds skill embedding cache
 │   ├── alembic.ini              # Alembic configuration
 │   │
@@ -124,7 +124,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   ├── base.py              # SQLAlchemy DeclarativeBase
 │   │   ├── user.py              # SQLAlchemy: users
 │   │   ├── resume.py            # SQLAlchemy: master_resumes
-│   │   ├── chunk.py             # SQLAlchemy: resume_chunks (pgvector)
+│   │   ├── chunk.py             # SQLAlchemy: resume_chunks (pgvector, text stored directly)
 │   │   └── report.py            # SQLAlchemy: tailoring_reports
 │   │
 │   ├── schemas/
@@ -356,14 +356,17 @@ docker compose up --build
 
 - LLM API key is server-side only (never sent to frontend)
 - Alembic migrations for schema versioning
-- Docker Compose runs `alembic upgrade head` on startup
+- Docker Compose runs `alembic upgrade head` on startup; worker depends on backend healthcheck
 - JD embeddings cached in Redis (SHA-256 key, 24h TTL)
 - Stream trimming (XTRIM ~50) prevents unbounded message accumulation
+- Stream position persisted in Redis (worker:last_stream_id) survives restarts
 - Idempotency check skips already-processed reports on worker restart
 - TTL auto-cleanup prevents unbounded database growth (7d chunks, 14d reports)
 - PII scrubbing before LLM calls (emails, phones, SSNs, credit cards, IPs, addresses)
 - Daily match rate limiting (5/day/user)
 - SSE streaming for job status (replaces polling)
+- pool_pre_ping on database engine (detects stale connections)
+- Fresh DB session for error handling (prevents infinite retry loops)
 
 ---
 

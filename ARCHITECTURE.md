@@ -101,6 +101,9 @@ POST /api/match (authenticated)
 ```
 Worker starts, connects to Redis + PostgreSQL
         │
+        ├── Load saved stream position from Redis (worker:last_stream_id)
+        │   └── If no saved position: flush stale stream, start from latest ("$")
+        │
         ├── Trim stale stream entries (XTRIM MAXLEN ~50)
         │
         ▼
@@ -139,9 +142,12 @@ process_job(payload):
         │
         ├── Send email via Brevo (score + dashboard link + PDF)
         │
+        ├── Persist stream position to Redis (worker:last_stream_id)
         └── XTRIM stream (maxlen ~50)
 
     On failure:
+        ├── Rollback failed transaction
+        ├── Mark report as "failed" via fresh DB session
         ├── Publish failed status to Redis Pub/Sub channel
         ├── Retry with re-enqueue (max 3 attempts per report)
         └── Idempotency prevents duplicate processing on restart
@@ -266,19 +272,17 @@ Each module is focused and independently testable. The `__init__.py` re-exports 
                             └──────────┬───────────────┘
                                        │
                              ┌──────────▼───────────────┐
-                             │     resume_chunks         │
-                             │    (pgvector enabled)     │
-                             ├──────────────────────────┤
-                             │ id              UUID PK   │
-                             │ resume_id       UUID FK   │
-                             │ chunk_index     INT       │
-                             │ chunk_start_char INT      │
-                             │ chunk_end_char   INT      │
-                             │ text            TEXT      │
-                             │ embedding       Vector(384)│
-                             │ skills          TEXT      │
-                             │ created_at      TIMESTAMPTZ│
-                             └──────────────────────────┘
+                              │     resume_chunks         │
+                              │    (pgvector enabled)     │
+                              ├──────────────────────────┤
+                              │ id              UUID PK   │
+                              │ resume_id       UUID FK   │
+                              │ chunk_index     INT       │
+                              │ text            TEXT      │
+                              │ embedding       Vector(384)│
+                              │ skills          TEXT      │
+                              │ created_at      TIMESTAMPTZ│
+                              └──────────────────────────┘
 
 ┌──────────────────────────┐
 │     tailoring_reports     │
@@ -413,9 +417,9 @@ Constants in `config/constants.py`:
 - `CHUNK_RETENTION_DAYS = 7` -- embeddings auto-deleted after 7 days
 - `REPORT_RETENTION_DAYS = 14` -- reports auto-deleted after 14 days
 
-### Text Reconstruction
+### Text Storage
 
-New resume chunks store `chunk_start_char` and `chunk_end_char` instead of the full text. On read, text is reconstructed by slicing `master_resumes.raw_text[start:end]`. This makes slices immune to future config changes (CHUNK_SIZE/CHUNK_OVERLAP) and saves ~20% storage per chunk. GitHub chunks retain their text since it cannot be reconstructed from resume raw_text.
+All resume chunks store their full text directly in the `text` column. No offset reconstruction needed. GitHub chunks and resume chunks both store text inline. This simplifies reads and avoids column dependency issues.
 
 ### Skill Derivation
 
@@ -429,7 +433,7 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 
 2. **Candidate-facing, not recruiter-facing.** The UX is designed for job seekers optimizing their own resumes. LLM prompts frame feedback as a career coach, not a gatekeeper.
 
-3. **Async job queue via Redis Streams.** Jobs are submitted instantly (202 Accepted) and processed in a separate worker. Stream trimmed to ~50 entries. Idempotency check skips already-processed reports on restart.
+3. **Async job queue via Redis Streams.** Jobs are submitted instantly (202 Accepted) and processed in a separate worker. Stream trimmed to ~50 entries. Idempotency check skips already-processed reports on restart. Stream position persisted in Redis across restarts.
 
 4. **Resume_id keying with SHA-256 dedup.** Embeddings are keyed by resume_id (not session_id). If a user uploads the same PDF again, the existing embeddings are reused -- no re-processing.
 
@@ -463,13 +467,14 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 - Redis-backed session store (survives restarts, auto-expires)
 - Redis Streams for async job processing with xread (no consumer groups)
 - Stream trimming (XTRIM MAXLEN ~50) prevents unbounded message accumulation
+- Stream position persisted in Redis (worker:last_stream_id) survives restarts
+- Stale stream flushed on first boot (no saved position)
 - Idempotency check prevents duplicate processing on worker restart
 - Email OTP + report notifications via Brevo
 - JWT in HttpOnly cookie (httponly, secure, samesite=strict)
 - SHA-256 resume deduplication
 - JD embedding caching (Redis, SHA-256 key, 24h TTL)
 - TTL auto-cleanup (7d chunks, 14d reports, orphaned resumes)
-- Text reconstruction via chunk_start_char/chunk_end_char (immune to config changes)
 - Skill derivation at query time (5% storage savings)
 - PII scrubbing before LLM calls (emails, phones, addresses)
 - SSE streaming for job status (instant push, no polling)
@@ -477,9 +482,9 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 - Daily match rate limiting (5/day/user)
 - Prometheus metrics (request latency, error rates, throughput)
 - Health check endpoint with DB + Redis connectivity checks
+- Worker depends on backend healthcheck (docker-compose)
 - Graceful shutdown (DB pool, Redis connections)
-- Retry with exponential backoff in worker (3 attempts)
-- Dead letter stream for failed jobs
+- Retry with re-enqueue in worker (3 attempts, fresh session on error)
 - Multi-layer upload security (validation, two-tier classification, two-tier injection, moderation)
 - JD validation (two-tier classification, injection, moderation, rate limiting)
 - Chat guardrails (query classification, two-tier injection, output sanitization)
@@ -490,6 +495,7 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 - Explainable scoring with category breakdowns
 - Alembic database migrations
 - Docker Compose for local development (backend + worker + frontend)
+- pool_pre_ping on database engine (detects stale connections)
 
 ---
 

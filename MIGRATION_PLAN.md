@@ -155,26 +155,33 @@ Redis Streams-backed job queue, pgvector embeddings, multi-layer security, Brevo
 ## Phase 17: Storage Optimization & TTL Cleanup -- DONE
 
 - `services/cleanup/purger.py`: TTL-based deletion of old chunks (7d), reports (14d), orphaned resumes
-- `services/storage/vector_store.py`: Text reconstruction from raw_text + chunk_start_char/chunk_end_char; empty text for new resume chunks; empty skills for all new chunks
+- `services/storage/vector_store.py`: Text stored directly in text column for all chunks (resume + github); simplified reads with no offset reconstruction
 - `services/matching/matcher.py`: Derives skills at query time via SkillExtractionService when not stored
 - `services/parsing/chunker.py`: Returns `list[dict]` with `text`, `start`, `end` offsets
-- `models/chunk.py`: Added `chunk_start_char` and `chunk_end_char` Integer columns
-- `migrations/versions/002_add_chunk_offsets.py`: Alembic migration for offset columns
 - `worker.py`: Periodic cleanup every 100 stream polls (~17min)
 - `config/constants.py`: CHUNK_RETENTION_DAYS=7, REPORT_RETENTION_DAYS=14
-- Storage savings: ~20% from text reconstruction + ~5% from skill derivation
 
 ## Phase 18: Architecture Gap Fixes -- DONE
 
 Fixed all discrepancies between ARCHITECTURE.md documentation and actual codebase:
 
-- **Chunk offsets**: `chunk_start_char`/`chunk_end_char` added to model, migration, chunker, and vector_store. Text reconstruction uses stored offsets instead of CHUNK_SIZE math.
 - **SSE via Redis Pub/Sub**: Worker publishes `{"status": "completed/failed"}` to `report:{report_id}` channel after DB commit. SSE endpoint subscribes to Redis Pub/Sub instead of polling DB every 2s.
 - **No localStorage**: Removed all `localStorage.setItem`/`getItem` calls from AuthPage, UploadPage, Dashboard. User email fetched from `GET /api/auth/me` via HttpOnly cookie.
-- **Stream trimming**: Worker runs `XTRIM MAXLEN ~50` after each message and on startup to prevent unbounded accumulation.
-- **Idempotency**: Worker checks report status before processing; skips if already `completed` or `failed`.
 - **pyproject.toml**: Removed chromadb dependency.
 - **settings.py**: Removed Resend config fields (replaced by Brevo).
+
+## Phase 19: Worker Reliability & Stream Management -- DONE
+
+Fixed infinite retry loops and stale message accumulation:
+
+- **ORM simplification**: Removed `chunk_start_char`/`chunk_end_char` columns from `ResumeChunk` model. All text stored directly in `text` column. Eliminated offset reconstruction logic.
+- **Worker error handling**: On failure, rolls back aborted transaction, then uses a fresh DB session to mark report as "failed". Prevents infinite retry loops caused by failed UPDATE in aborted transaction.
+- **Stream position persistence**: Worker stores `LAST_ID` in Redis key `worker:last_stream_id`. Survives container restarts — no re-reading old messages.
+- **Stale stream flush**: On first boot (no saved position), worker flushes entire stream and starts from latest entry ("$").
+- **Database pool_pre_ping**: Added `pool_pre_ping=True` to async engine to detect and recycle stale connections.
+- **Worker healthcheck**: Docker Compose worker depends on backend `service_healthy` condition. Backend healthcheck uses Python urllib.
+- **Alembic env.py fix**: Removed `connection.commit()` that broke alembic's transaction management, preventing migration version from being updated.
+- **Migration 002**: Simplified to no-op (columns removed from model).
 
 ---
 
@@ -212,7 +219,7 @@ Fixed all discrepancies between ARCHITECTURE.md documentation and actual codebas
 - [x] SHA-256 resume deduplication
 - [x] JD embedding caching (Redis, SHA-256 key, 24h TTL)
 - [x] TTL auto-cleanup (7d chunks, 14d reports, orphaned resumes)
-- [x] Text reconstruction from raw_text (20% storage savings)
+- [x] Text stored directly in text column (simplified reads)
 - [x] Skill derivation at query time (5% storage savings)
 - [x] PII scrubbing before LLM calls
 - [x] Daily match rate limiting (5/day/user)
@@ -220,9 +227,12 @@ Fixed all discrepancies between ARCHITECTURE.md documentation and actual codebas
 - [x] Layout-aware PDF parsing
 - [x] Prometheus metrics (request latency, error rates, throughput)
 - [x] Health check endpoint (DB + Redis, cached 30s)
+- [x] Worker depends on backend healthcheck (docker-compose)
 - [x] Graceful shutdown (DB pool, Redis connections)
-- [x] Retry with exponential backoff in worker
-- [x] Dead letter stream for failed jobs
+- [x] Worker error handling with fresh session on failure
+- [x] Stream position persisted in Redis (survives restarts)
+- [x] Stale stream flush on first boot
+- [x] pool_pre_ping on database engine
 - [x] Rate limiting on OTP (3/5min), chat (50 msgs/session/hour), and matches (5/day)
 - [x] Upload validation (magic bytes, size, pages, text length)
 - [x] Two-tier document classification (heuristic + LLM)
@@ -259,29 +269,33 @@ Fixed all discrepancies between ARCHITECTURE.md documentation and actual codebas
 - `backend/services/pdf/__init__.py` -- PDF report generation (fpdf2)
 - `backend/migrations/versions/002_add_chunk_offsets.py` -- Alembic migration for chunk offset columns
 
-### Modified Files (Phases 15-18)
+### Modified Files (Phases 15-19)
 - `backend/api/auth.py` -- Full OTP flow (request-otp, verify-otp, anonymous) with Brevo + HttpOnly cookie
-- `backend/api/upload.py` -- Uses modular guardrails, two-tier classification, chunk offsets in metadata
+- `backend/api/upload.py` -- Uses modular guardrails, two-tier classification, no offset metadata
 - `backend/api/match.py` -- Uses validate_jd_text, two-tier classification, daily rate limit, email opt-in, SSE via Redis Pub/Sub
 - `backend/api/chat.py` -- Async validate_message, modular guardrails imports, optional resume_id
-- `backend/api/github.py` -- Added auth + ownership check, chunk offsets in metadata
+- `backend/api/github.py` -- Added auth + ownership check, no offset metadata
 - `backend/api/search.py` -- Added auth + ownership check
 - `backend/api/session.py` -- Added auth + ownership check
-- `backend/models/chunk.py` -- Added chunk_start_char and chunk_end_char columns
+- `backend/models/chunk.py` -- Simplified: removed chunk_start_char/chunk_end_char columns
 - `backend/services/llm/client.py` -- Added classify_document, detect_injection methods, timeout/retry
 - `backend/services/llm/prompts.py` -- Added CLASSIFICATION_SYSTEM_PROMPT
 - `backend/services/matching/matcher.py` -- JD caching, category breakdown, skill derivation at query time
 - `backend/services/parsing/chunker.py` -- Returns list[dict] with text, start, end offsets
-- `backend/services/storage/vector_store.py` -- Text reconstruction using stored offsets, empty text/skills for new chunks
+- `backend/services/storage/vector_store.py` -- Text stored directly; no offset reconstruction; simplified reads
+- `backend/services/database.py` -- Added pool_pre_ping=True
+- `backend/migrations/env.py` -- Removed connection.commit() that broke transaction management
+- `backend/migrations/versions/002_add_chunk_offsets.py` -- Simplified to no-op (columns removed from model)
+- `backend/worker.py` -- Stream position in Redis, flush on first boot, fresh session on error, XREAD
 - `backend/config/settings.py` -- Brevo config fields, removed Resend
 - `backend/config/constants.py` -- JD_EMBEDDING_CACHE_TTL, CHUNK_RETENTION_DAYS, REPORT_RETENTION_DAYS
-- `backend/worker.py` -- XREAD (not xreadgroup), PII scrubbing, email with PDF, stream trimming, idempotency check, Redis Pub/Sub publish
 - `backend/schemas/auth.py` -- RequestOTPRequest, VerifyOTPRequest, EmailStr
 - `backend/schemas/match.py` -- send_email field
 - `backend/schemas/chat.py` -- Optional resume_id
 - `backend/requirements.txt` -- Added email-validator, fpdf2
 - `backend/pyproject.toml` -- Removed chromadb
 - `backend/.env.example` -- Brevo config (replaced Resend)
+- `docker-compose.yml` -- Worker depends on backend healthcheck
 - `frontend/recruiter-ui/src/pages/AuthPage.jsx` -- Removed localStorage calls
 - `frontend/recruiter-ui/src/pages/UploadPage.jsx` -- User email from /api/auth/me, sign-out
 - `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- User email from /api/auth/me, sign-out
