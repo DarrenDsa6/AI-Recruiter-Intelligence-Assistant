@@ -45,8 +45,7 @@ class ReportPDF(FPDF):
                 text = json.dumps(item, indent=2)
             else:
                 text = str(item)
-            self.cell(5)
-            self.multi_cell(0, 5, f"  {text}")
+            self.multi_cell(0, 5, f"  - {text}")
         self.ln(2)
 
     def key_value(self, key, value):
@@ -111,10 +110,9 @@ def generate_report_pdf(
             if isinstance(s, dict):
                 orig = s.get("original", s.get("keyword", ""))
                 suggested = s.get("suggested_rewrite", s.get("suggestion", ""))
-                pdf.set_font("Helvetica", "", 10)
-                pdf.set_text_color(50, 50, 50)
-                pdf.cell(5)
-                pdf.multi_cell(0, 5, f"{orig} -> {suggested}")
+            pdf.set_font("Helvetica", "", 10)
+            pdf.set_text_color(50, 50, 50)
+            pdf.multi_cell(0, 5, f"  {orig} -> {suggested}")
             else:
                 pdf.bullet_list([str(s)])
         pdf.ln(2)
@@ -126,19 +124,16 @@ def generate_report_pdf(
             if isinstance(q, dict):
                 pdf.set_font("Helvetica", "B", 10)
                 pdf.set_text_color(50, 50, 50)
-                pdf.cell(5)
-                pdf.multi_cell(0, 5, f"{i}. {q.get('question', '')}")
+                pdf.multi_cell(0, 5, f"  {i}. {q.get('question', '')}")
                 why = q.get("why_likely", "")
                 if why:
                     pdf.set_font("Helvetica", "I", 9)
                     pdf.set_text_color(100, 100, 100)
-                    pdf.cell(8)
-                    pdf.multi_cell(0, 5, f"Why likely: {why}")
+                    pdf.multi_cell(0, 5, f"    Why likely: {why}")
                 tips = q.get("prep_tips", "")
                 if tips:
                     pdf.set_font("Helvetica", "", 9)
-                    pdf.cell(8)
-                    pdf.multi_cell(0, 5, f"Prep tips: {tips}")
+                    pdf.multi_cell(0, 5, f"    Prep tips: {tips}")
                 pdf.ln(2)
 
     tech_questions = questions.get("technical", [])
@@ -148,8 +143,7 @@ def generate_report_pdf(
             text = q if isinstance(q, str) else q.get("question", json.dumps(q))
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(50, 50, 50)
-            pdf.cell(5)
-            pdf.multi_cell(0, 5, f"{i}. {text}")
+            pdf.multi_cell(0, 5, f"  {i}. {text}")
         pdf.ln(2)
 
     rewrite_list = rewrites.get("rewrites", [])
@@ -161,13 +155,11 @@ def generate_report_pdf(
                 options = rw.get("rewrite_options", rw.get("rewrites", []))
                 pdf.set_font("Helvetica", "B", 10)
                 pdf.set_text_color(50, 50, 50)
-                pdf.cell(5)
-                pdf.multi_cell(0, 5, f"Original: {original}")
+                pdf.multi_cell(0, 5, f"  Original: {original}")
                 for j, opt in enumerate(options, 1):
                     pdf.set_font("Helvetica", "", 9)
                     pdf.set_text_color(37, 99, 235)
-                    pdf.cell(8)
-                    pdf.multi_cell(0, 5, f"Option {j}: {opt}")
+                    pdf.multi_cell(0, 5, f"    Option {j}: {opt}")
                 pdf.ln(3)
 
     if jd_text:
