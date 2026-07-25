@@ -109,9 +109,9 @@ async def main():
     while True:
         try:
             entries = await redis.xreadgroup(
-                groupname=WORKER_CONSUMER_GROUP,
-                consumername=CONSUMER_NAME,
-                streams={WORKER_STREAM_NAME: ">"},
+                WORKER_CONSUMER_GROUP,
+                CONSUMER_NAME,
+                {WORKER_STREAM_NAME: ">"},
                 count=1,
                 block=5000,
             )

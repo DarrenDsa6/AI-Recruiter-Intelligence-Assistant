@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+import logging
 
 from sqlalchemy import engine_from_config, pool
 from alembic import context
@@ -7,6 +8,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+logger = logging.getLogger("alembic.env")
 
 from models.base import Base
 from config.settings import settings
@@ -41,6 +44,17 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
+        from sqlalchemy import inspect as sa_inspect
+        inspector = sa_inspect(connection)
+        existing_tables = inspector.get_table_names()
+        alembic_table_exists = "alembic_version" in existing_tables
+
+        if "users" in existing_tables and not alembic_table_exists:
+            logger.info("Tables exist but no alembic_version — stamping head")
+            context.configure(connection=connection, target_metadata=target_metadata)
+            context.stamp()
+            return
+
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
             context.run_migrations()
