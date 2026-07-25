@@ -75,6 +75,12 @@ def root():
 
 @app.get("/api/health")
 async def health():
+    import time
+    now = time.time()
+    cached = getattr(app.state, "_health_cache", None)
+    if cached and now - cached["ts"] < 30:
+        return cached["result"]
+
     checks = {"status": "ok"}
 
     try:
@@ -100,4 +106,5 @@ async def health():
     if any("error" in v for v in checks.values()):
         checks["status"] = "degraded"
 
+    app.state._health_cache = {"result": checks, "ts": now}
     return checks
