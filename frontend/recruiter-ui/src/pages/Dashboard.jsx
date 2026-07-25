@@ -193,7 +193,7 @@ export default function Dashboard() {
                 <p className="text-[10px] text-gray-600">{reports.length} report{reports.length !== 1 ? "s" : ""}</p>
               </div>
             </div>
-            <button onClick={handleLogout} className="text-[10px] text-gray-600 hover:text-gray-300 transition px-2 py-1 rounded hover:bg-white/5">
+            <button onClick={handleLogout} className="text-[10px] text-red-400 hover:text-red-300 hover:bg-red-500/10 transition px-2 py-1 rounded border border-red-500/30 hover:border-red-500/50">
               Sign out
             </button>
           </div>

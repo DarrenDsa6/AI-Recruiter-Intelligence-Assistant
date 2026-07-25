@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { uploadResumeAndJD, startMatch, ingestGitHub, checkAuth } from "../services/api";
 import useBackendStatus from "../hooks/useBackendStatus";
 
-const STEPS = { INPUT: 0, PROCESSING: 1, QUEUED: 2 };
+const STEPS = { INPUT: 0, PROCESSING: 1 };
 
 export default function UploadPage() {
   const [step, setStep] = useState(STEPS.INPUT);
@@ -61,18 +61,12 @@ export default function UploadPage() {
       }
       setStatusMsg("Queuing analysis job...");
       await startMatch(uploadResult.resume_id, jdText, sendEmail);
-      setStep(STEPS.QUEUED);
+      navigate("/dashboard");
     } catch (err) {
       setError(err.message || "Something went wrong");
       setStep(STEPS.INPUT);
     }
   }, [resumeFile, jdText, githubUsername, sendEmail]);
-
-  const steps = [
-    { label: "Upload", done: step > STEPS.INPUT },
-    { label: "Analyze", done: step > STEPS.PROCESSING },
-    { label: "Done", done: false },
-  ];
 
   return (
     <div className="min-h-screen bg-[#0B0F19] flex items-center justify-center p-4">
@@ -89,36 +83,9 @@ export default function UploadPage() {
               <p className="text-[10px] text-gray-600">{userEmail}</p>
             </div>
           </div>
-          <button onClick={handleLogout} className="text-xs text-gray-600 hover:text-gray-300 transition px-3 py-1.5 rounded-lg hover:bg-white/5">
+          <button onClick={handleLogout} className="text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 transition px-3 py-1.5 rounded-lg border border-red-500/30 hover:border-red-500/50">
             Sign out
           </button>
-        </div>
-
-        <div className="flex items-center justify-center gap-1.5">
-          {steps.map((s, i) => (
-            <div key={i} className="flex items-center gap-1.5">
-              <div className="flex items-center gap-1.5">
-                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium border transition-all ${
-                  s.done
-                    ? "border-green-500 bg-green-500/10 text-green-400"
-                    : i === step || (step === STEPS.PROCESSING && i === 1) || (step === STEPS.QUEUED && i === 2)
-                    ? "border-blue-500 bg-blue-500/10 text-blue-400"
-                    : "border-white/10 text-gray-600"
-                }`}>
-                  {s.done ? (
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                    </svg>
-                  ) : i + 1}
-                </div>
-                <span className={`text-xs font-medium ${
-                  i === step || (step === STEPS.PROCESSING && i === 1) || (step === STEPS.QUEUED && i === 2)
-                    ? "text-gray-300" : "text-gray-600"
-                }`}>{s.label}</span>
-              </div>
-              {i < steps.length - 1 && <div className="w-6 h-px bg-white/10 mx-1" />}
-            </div>
-          ))}
         </div>
 
         {!connected && (
@@ -274,42 +241,6 @@ export default function UploadPage() {
               <div>
                 <p className="text-sm font-medium text-gray-300">{statusMsg}</p>
                 <p className="text-xs text-gray-600 mt-1">This usually takes 30-60 seconds</p>
-              </div>
-            </div>
-          )}
-
-          {step === STEPS.QUEUED && (
-            <div className="text-center py-10 space-y-5">
-              <div className="w-14 h-14 rounded-full bg-green-900/30 border border-green-700/30 flex items-center justify-center mx-auto animate-fade-in">
-                <svg className="w-7 h-7 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-sm font-medium text-green-300">
-                  {sendEmail ? "We'll email you the PDF report" : "Analysis queued"}
-                </p>
-                <p className="text-xs text-gray-500 mt-1 max-w-xs mx-auto">
-                  {sendEmail
-                    ? "Your resume is being analyzed. You'll receive the full report as a PDF in your inbox."
-                    : "Your resume is being analyzed. Head to the dashboard to see results."}
-                </p>
-              </div>
-              <div className="flex gap-3 justify-center">
-                {!sendEmail && (
-                  <button
-                    onClick={() => navigate("/dashboard")}
-                    className="px-5 py-2.5 rounded-xl font-medium text-sm bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 transition-all shadow-lg shadow-blue-600/10"
-                  >
-                    View Dashboard
-                  </button>
-                )}
-                <button
-                  onClick={() => { setStep(STEPS.INPUT); setResumeFile(null); setJdText(""); setGithubUsername(""); setGithubToken(""); setSendEmail(false); }}
-                  className="px-5 py-2.5 rounded-xl font-medium text-sm bg-white/5 border border-white/10 hover:bg-white/10 transition-all"
-                >
-                  New Analysis
-                </button>
               </div>
             </div>
           )}
