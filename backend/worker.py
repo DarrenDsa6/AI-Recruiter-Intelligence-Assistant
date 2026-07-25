@@ -26,7 +26,7 @@ from models.user import User
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [worker] %(name)s: %(message)s")
 logger = logging.getLogger("worker")
 
-LAST_ID = "0"
+LAST_ID_KEY = "worker:last_stream_id"
 CLEANUP_INTERVAL = 100
 
 
@@ -145,6 +145,19 @@ async def main():
     await init_db()
     redis = await get_redis()
 
+    last_id_raw = await redis.get(LAST_ID_KEY)
+    if last_id_raw:
+        LAST_ID = last_id_raw.decode() if isinstance(last_id_raw, bytes) else str(last_id_raw)
+        logger.info(f"Resumed from stream position: {LAST_ID}")
+    else:
+        LAST_ID = "$"
+        logger.info("No saved position — starting from latest stream entry, trimming old messages")
+        try:
+            await redis.delete(WORKER_STREAM_NAME)
+            logger.info("Flushed stale stream entries")
+        except Exception:
+            pass
+
     try:
         await redis.xtrim(WORKER_STREAM_NAME, maxlen=50)
         logger.info("Trimmed stream on startup")
@@ -177,6 +190,10 @@ async def main():
                     data = parse_entry(raw_fields)
                     logger.info(f"Received job: msg_id={msg_id}, data={data}")
                     LAST_ID = msg_id
+                    try:
+                        await redis.set(LAST_ID_KEY, msg_id)
+                    except Exception:
+                        pass
 
                     try:
                         raw_payload = data.get("payload", "{}")
