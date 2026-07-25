@@ -4,7 +4,7 @@ from upstash_redis.asyncio import Redis
 
 from config.settings import settings
 
-logger = logging(__name__)
+logger = logging.getLogger(__name__)
 
 _client: Redis | None = None
 
