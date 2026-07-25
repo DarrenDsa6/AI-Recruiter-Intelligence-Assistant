@@ -18,7 +18,6 @@ from services.storage import vector_store, session_store
 from services.guardrails import validate_message, check_rate_limit, sanitize_output
 from models.report import TailoringReport
 from schemas.chat import ChatRequest
-from schemas.common import ErrorResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,7 +31,9 @@ async def chat_stream(
 ):
     error = await validate_message(request.message)
     if error:
-        return ErrorResponse(error=error)
+        async def err_gen():
+            yield f"data: {json.dumps({'type': 'error', 'message': error})}\n\n"
+        return StreamingResponse(err_gen(), media_type="text/event-stream")
 
     redis = await get_redis()
 
@@ -44,14 +45,18 @@ async def chat_stream(
     )
     report = result.scalar_one_or_none()
     if not report:
-        return ErrorResponse(error="Report not found")
+        async def err_gen():
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Report not found'})}\n\n"
+        return StreamingResponse(err_gen(), media_type="text/event-stream")
 
     resume_id = request.resume_id or report.resume_id
 
     session_key = f"chat:{user_id}:{resume_id}"
     rate_error = await check_rate_limit(redis, session_key)
     if rate_error:
-        return ErrorResponse(error=rate_error)
+        async def err_gen():
+            yield f"data: {json.dumps({'type': 'error', 'message': rate_error})}\n\n"
+        return StreamingResponse(err_gen(), media_type="text/event-stream")
 
     stored_data = await vector_store.get_by_resume(db, str(resume_id))
     if not stored_data or not stored_data.get("documents"):
