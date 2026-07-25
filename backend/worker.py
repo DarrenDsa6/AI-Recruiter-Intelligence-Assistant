@@ -26,13 +26,10 @@ from models.user import User
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [worker] %(name)s: %(message)s")
 logger = logging.getLogger("worker")
 
-LAST_ID_KEY_URGENT = "worker:last_stream_id:urgent"
-LAST_ID_KEY_EMAIL = "worker:last_stream_id:email"
+CONSUMER_GROUP = "ai-recruiter"
+CONSUMER_NAME = "worker-1"
 CLEANUP_INTERVAL = 100
 WORKER_CONCURRENCY = 3
-
-LAST_ID_URGENT = "0"
-LAST_ID_EMAIL = "0"
 
 
 async def process_job(payload: dict, db, redis):
@@ -135,126 +132,156 @@ def parse_entry(raw_fields):
     return {}
 
 
+def parse_payload(data):
+    raw_payload = data.get("payload", "{}")
+    if isinstance(raw_payload, bytes):
+        raw_payload = raw_payload.decode("utf-8")
+    payload = json.loads(raw_payload)
+    retries = int(data.get("retries", 0))
+    return payload, retries
+
+
+async def ensure_consumer_group(redis, stream_name):
+    try:
+        await redis.xgroup_create(stream_name, CONSUMER_GROUP, id="0", mkstream=True)
+        logger.info(f"Created consumer group '{CONSUMER_GROUP}' on '{stream_name}'")
+    except Exception as e:
+        if "BUSYGROUP" not in str(e):
+            raise
+        logger.debug(f"Consumer group '{CONSUMER_GROUP}' already exists on '{stream_name}'")
+
+
+async def recover_pending(redis, stream_name, semaphore, active_tasks, is_urgent):
+    try:
+        pending = await redis.xpending_range(stream_name, CONSUMER_GROUP, min="-", max="+", count=10)
+        if not pending:
+            return
+
+        for entry in pending:
+            msg_id = entry[0] if isinstance(entry, (list, tuple)) else entry.get("message_id")
+            if not msg_id:
+                continue
+
+            logger.info(f"Recovering pending entry: msg_id={msg_id}, stream={stream_name}")
+            try:
+                claimed = await redis.xclaim(
+                    stream_name, CONSUMER_GROUP, CONSUMER_NAME,
+                    min_idle_time=0, ids=[msg_id]
+                )
+                if not claimed:
+                    continue
+
+                for claimed_msg_id, raw_fields in (claimed if isinstance(claimed, list) else [claimed]):
+                    data = parse_entry(raw_fields)
+                    payload, retries = parse_payload(data)
+
+                    task = asyncio.create_task(run_with_ack(
+                        payload, is_urgent, retries, redis, stream_name, claimed_msg_id, semaphore
+                    ))
+                    active_tasks.add(task)
+                    task.add_done_callback(active_tasks.discard)
+            except Exception as claim_err:
+                logger.warning(f"Failed to claim pending entry {msg_id}: {claim_err}")
+    except Exception as e:
+        logger.warning(f"Failed to check pending entries for {stream_name}: {e}")
+
+
+async def run_with_ack(payload, is_urgent, retries, redis, stream_name, msg_id, semaphore):
+    async with semaphore:
+        try:
+            async with db_module.async_session_factory() as db:
+                await process_job(payload, db, redis)
+            await redis.xack(stream_name, CONSUMER_GROUP, msg_id)
+            logger.debug(f"ACKed msg_id={msg_id}")
+        except Exception as e:
+            logger.error(f"Attempt {retries + 1} failed: {e}")
+            if retries < WORKER_MAX_RETRIES - 1:
+                retry_payload = json.dumps({**payload, "retries": retries + 1})
+                retry_stream = WORKER_STREAM_URGENT if is_urgent else WORKER_STREAM_EMAIL
+                new_id = await redis.xadd(retry_stream, "*", {"payload": retry_payload})
+                await redis.xack(stream_name, CONSUMER_GROUP, msg_id)
+                logger.info(f"Retried as msg_id={new_id}")
+            else:
+                await redis.xack(stream_name, CONSUMER_GROUP, msg_id)
+                logger.error(f"Max retries reached for report={payload.get('report_id')}")
+
+
+async def read_stream(redis, stream_name, count=1):
+    try:
+        result = await redis.xreadgroup(
+            CONSUMER_GROUP, CONSUMER_NAME,
+            {stream_name: ">"}, count=count
+        )
+        if not result:
+            return []
+        for s_name, messages in result:
+            if s_name == stream_name:
+                return messages
+    except Exception as e:
+        logger.error(f"XREADGROUP failed for {stream_name}: {e}")
+    return []
+
+
 async def main():
-    global LAST_ID_URGENT, LAST_ID_EMAIL
-    logger.info(f"Starting worker (concurrency={WORKER_CONCURRENCY})...")
+    logger.info(f"Starting worker (concurrency={WORKER_CONCURRENCY}, group={CONSUMER_GROUP})...")
     await init_db()
     redis = await get_redis()
 
-    for key, name, var_attr in [
-        (LAST_ID_KEY_URGENT, WORKER_STREAM_URGENT, "urgent"),
-        (LAST_ID_KEY_EMAIL, WORKER_STREAM_EMAIL, "email"),
-    ]:
-        saved = await redis.get(key)
-        if saved:
-            val = saved.decode() if isinstance(saved, bytes) else str(saved)
-            if var_attr == "urgent":
-                LAST_ID_URGENT = val
-            else:
-                LAST_ID_EMAIL = val
-            logger.info(f"Resumed {name} stream from position: {val}")
-        else:
-            start_id = "0-0"
-            try:
-                entries = await redis.xrevrange(name, count=1)
-                if entries:
-                    last_id = entries[0][0] if isinstance(entries[0], (list, tuple)) else entries[0]
-                    ms = int(last_id.split("-")[0])
-                    start_id = f"{ms - 1}-0"
-            except Exception:
-                pass
-            if var_attr == "urgent":
-                LAST_ID_URGENT = start_id
-            else:
-                LAST_ID_EMAIL = start_id
-            logger.info(f"No saved position for {name} — starting from: {start_id}")
-
-    try:
-        await redis.xtrim(WORKER_STREAM_URGENT, maxlen=50)
-        await redis.xtrim(WORKER_STREAM_EMAIL, maxlen=50)
-        logger.info("Trimmed streams on startup")
-    except Exception:
-        pass
+    await ensure_consumer_group(redis, WORKER_STREAM_URGENT)
+    await ensure_consumer_group(redis, WORKER_STREAM_EMAIL)
 
     semaphore = asyncio.Semaphore(WORKER_CONCURRENCY)
     active_tasks: set[asyncio.Task] = set()
 
-    async def run_job(payload, is_urgent, retries):
-        async with semaphore:
-            try:
-                async with db_module.async_session_factory() as db:
-                    await process_job(payload, db, redis)
-            except Exception as e:
-                logger.error(f"Attempt {retries + 1} failed: {e}")
-                if retries < WORKER_MAX_RETRIES - 1:
-                    retry_payload = json.dumps({**payload, "retries": retries + 1})
-                    retry_stream = WORKER_STREAM_URGENT if is_urgent else WORKER_STREAM_EMAIL
-                    await redis.xadd(retry_stream, "*", {"payload": retry_payload})
-                else:
-                    logger.error(f"Max retries reached for report={payload.get('report_id')}")
+    logger.info(f"Checking for pending entries...")
+    await recover_pending(redis, WORKER_STREAM_URGENT, semaphore, active_tasks, is_urgent=True)
+    await recover_pending(redis, WORKER_STREAM_EMAIL, semaphore, active_tasks, is_urgent=False)
 
     logger.info(f"Listening on '{WORKER_STREAM_URGENT}' (priority) and '{WORKER_STREAM_EMAIL}' (email)")
 
     poll_count = 0
     while True:
         try:
-            entries = await redis.xread(
-                {WORKER_STREAM_URGENT: LAST_ID_URGENT, WORKER_STREAM_EMAIL: LAST_ID_EMAIL},
-                count=1,
-            )
-
-            if not entries:
-                poll_count += 1
-                if poll_count >= CLEANUP_INTERVAL:
-                    poll_count = 0
-                    try:
-                        async with db_module.async_session_factory() as db:
-                            result = await purger.run_cleanup(db)
-                            if any(v > 0 for v in result.values()):
-                                logger.info(f"Cleanup: {result}")
-                    except Exception as cleanup_err:
-                        logger.error(f"Cleanup failed: {cleanup_err}")
-                await asyncio.sleep(10)
-                continue
-
-            for stream_name, messages in entries:
-                for msg_id, raw_fields in messages:
+            urgent_entries = await read_stream(redis, WORKER_STREAM_URGENT)
+            if urgent_entries:
+                for msg_id, raw_fields in urgent_entries:
                     data = parse_entry(raw_fields)
-                    is_urgent = stream_name == WORKER_STREAM_URGENT
-                    logger.info(f"Received job: msg_id={msg_id}, stream={'urgent' if is_urgent else 'email'}, active={len(active_tasks)}")
+                    payload, retries = parse_payload(data)
+                    logger.info(f"Received urgent job: msg_id={msg_id}, active={len(active_tasks)}")
 
-                    if is_urgent:
-                        LAST_ID_URGENT = msg_id
-                        try:
-                            await redis.set(LAST_ID_KEY_URGENT, msg_id)
-                        except Exception:
-                            pass
-                    else:
-                        LAST_ID_EMAIL = msg_id
-                        try:
-                            await redis.set(LAST_ID_KEY_EMAIL, msg_id)
-                        except Exception:
-                            pass
-
-                    try:
-                        raw_payload = data.get("payload", "{}")
-                        if isinstance(raw_payload, bytes):
-                            raw_payload = raw_payload.decode("utf-8")
-                        payload = json.loads(raw_payload)
-                        retries = int(data.get("retries", 0))
-                    except Exception as parse_err:
-                        logger.error(f"Failed to parse entry: {parse_err}")
-                        continue
-
-                    task = asyncio.create_task(run_job(payload, is_urgent, retries))
+                    task = asyncio.create_task(run_with_ack(
+                        payload, True, retries, redis, WORKER_STREAM_URGENT, msg_id, semaphore
+                    ))
                     active_tasks.add(task)
                     task.add_done_callback(active_tasks.discard)
+                continue
 
-            try:
-                await redis.xtrim(WORKER_STREAM_URGENT, maxlen=50)
-                await redis.xtrim(WORKER_STREAM_EMAIL, maxlen=50)
-            except Exception:
-                pass
+            email_entries = await read_stream(redis, WORKER_STREAM_EMAIL)
+            if email_entries:
+                for msg_id, raw_fields in email_entries:
+                    data = parse_entry(raw_fields)
+                    payload, retries = parse_payload(data)
+                    logger.info(f"Received email job: msg_id={msg_id}, active={len(active_tasks)}")
+
+                    task = asyncio.create_task(run_with_ack(
+                        payload, False, retries, redis, WORKER_STREAM_EMAIL, msg_id, semaphore
+                    ))
+                    active_tasks.add(task)
+                    task.add_done_callback(active_tasks.discard)
+                continue
+
+            poll_count += 1
+            if poll_count >= CLEANUP_INTERVAL:
+                poll_count = 0
+                try:
+                    async with db_module.async_session_factory() as db:
+                        result = await purger.run_cleanup(db)
+                        if any(v > 0 for v in result.values()):
+                            logger.info(f"Cleanup: {result}")
+                except Exception as cleanup_err:
+                    logger.error(f"Cleanup failed: {cleanup_err}")
+
+            await asyncio.sleep(10)
 
         except asyncio.CancelledError:
             logger.info("Worker shutting down...")
