@@ -9,6 +9,10 @@ services:
       - ./backend/.env
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: >
+      sh -c "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000"
     restart: unless-stopped
 
   worker:
@@ -20,6 +24,8 @@ services:
       - ./backend/.env
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - backend
     restart: unless-stopped
@@ -28,7 +34,7 @@ services:
     build:
       context: ./frontend/recruiter-ui
       args:
-        - REACT_APP_API_URL=/api
+        - VITE_API_URL=/api
     container_name: ai-recruiter-frontend
     ports:
       - "3000:80"

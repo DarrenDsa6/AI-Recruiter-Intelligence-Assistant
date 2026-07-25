@@ -1,32 +1,32 @@
-from fastapi import FastAPI
-from contextlib import asynccontextmanager
 import asyncio
-import os
 import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from api.auth import router as auth_router
-from api.upload import router as upload_router
-from api.github import router as github_router
-from api.match import router as match_router
-from api.session import router as session_router
-from api.chat import router as chat_router
-
-from services.db import init_db, close_db
-from services.redis_client import close_redis
-from services.model_registry import ModelRegistry, DOC_EMBEDDING_MODEL
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+from config.settings import settings
+from services.database import init_db, close_db
+from services.redis import close_redis
+from services.embedding import ModelRegistry
+from config.constants import DOC_EMBEDDING_MODEL
+from api import (
+    auth_router,
+    upload_router,
+    github_router,
+    match_router,
+    session_router,
+    chat_router,
+    search_router,
 )
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     logger.info("Initializing database...")
     await init_db()
 
@@ -36,7 +36,6 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown
     logger.info("Shutting down...")
     await close_db()
     await close_redis()
@@ -50,29 +49,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Prometheus metrics
 Instrumentator().instrument(app).expose(app)
 
-# Routers
 app.include_router(auth_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")
 app.include_router(github_router, prefix="/api")
 app.include_router(match_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
-
-# CORS
-_cors_origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
-_env_origins = os.environ.get("CORS_ORIGINS", "")
-if _env_origins:
-    _cors_origins.extend([o.strip() for o in _env_origins.split(",") if o.strip()])
+app.include_router(search_router, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -81,34 +70,27 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {
-        "service": "AI Resume Tailor",
-        "status": "running",
-        "version": "2.0.0",
-    }
+    return {"service": "AI Resume Tailor", "status": "running", "version": "2.0.0"}
 
 
 @app.get("/api/health")
 async def health():
     checks = {"status": "ok"}
 
-    # Check DB
     try:
-        from services.db import engine
+        from services.database import engine
         if engine:
+            from sqlalchemy import text
             async with engine.connect() as conn:
-                await conn.execute(
-                    __import__("sqlalchemy").text("SELECT 1")
-                )
+                await conn.execute(text("SELECT 1"))
             checks["database"] = "ok"
         else:
             checks["database"] = "not initialized"
     except Exception as e:
         checks["database"] = f"error: {str(e)}"
 
-    # Check Redis
     try:
-        from services.redis_client import get_redis
+        from services.redis import get_redis
         redis = await get_redis()
         await redis.ping()
         checks["redis"] = "ok"

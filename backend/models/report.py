@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Text, DateTime, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 
-from models.user import Base
+from sqlalchemy import Text, DateTime, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+
+from models.base import Base
 
 
 class TailoringReport(Base):
@@ -14,7 +15,7 @@ class TailoringReport(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     resume_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("master_resumes.id", ondelete="CASCADE"), nullable=False, index=True)
     jd_text: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, default="pending")  # pending | processing | completed | failed
+    status: Mapped[str] = mapped_column(Text, default="pending")
     match_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     github_analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

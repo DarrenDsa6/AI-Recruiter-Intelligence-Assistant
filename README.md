@@ -7,14 +7,15 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 ## Features
 
 - **Email OTP Authentication** -- Passwordless sign-in via 6-digit code (Resend email)
-- **Resume Ingestion** -- PDF upload with SHA-256 deduplication; parsed, chunked, and embedded into ChromaDB keyed by resume_id (persists across applications)
+- **Resume Ingestion** -- PDF upload with SHA-256 deduplication; parsed, chunked, and embedded into PostgreSQL via pgvector (persists across applications)
 - **Async Job Queue** -- Redis Streams producer/consumer pattern; jobs are submitted instantly (202) and processed in a separate worker
 - **ATS Compatibility Scoring** -- Deterministic skill matching (semantic + regex) at 70% weight + document similarity at 30%
 - **Career Coach AI** -- Re-engineered LLM prompts focus on ATS optimization, not recruiter judgment
 - **Actionable Rewrites** -- AI generates rewritten bullet points for weak resume sections
 - **Gap-Focused Interview Prep** -- Questions target the candidate's exact skill gaps with prep tips
 - **Report History** -- All past analyses persist in PostgreSQL with a sidebar dashboard
-- **Streaming Chat** -- Resume-aware conversational follow-ups with RAG context
+- **Streaming Chat** -- Resume-aware conversational follow-ups with JD + GitHub context via RAG
+- **Chat Guardrails** -- Input validation, prompt injection protection, output sanitization, rate limiting
 - **PDF Export** -- Download the full report as a pixel-perfect A4 PDF
 - **Background Worker** -- Separate process with retry/backoff, dead letter stream, and email notifications
 
@@ -29,7 +30,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
               verify-otp ────────────► Postgres (upsert user)
               ◄── JWT token ──────────
 
-  UploadPage ──► POST /api/upload ───► SHA-256 dedup check ──► ChromaDB (embeddings)
+  UploadPage ──► POST /api/upload ───► SHA-256 dedup check ──► PostgreSQL + pgvector (embeddings)
                  POST /api/match ────► Redis Stream ────────► Worker consumes
                  ◄── 202 Accepted ────                    ┌───────────────────────┐
                                                           │  1. compute_similarity │
@@ -43,6 +44,8 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
   Dashboard ──► GET /api/reports ────► Postgres (list reports)
                 GET /api/reports/:id ─► Postgres (full report)
                 Poll status until "completed"
+                POST /api/chat ──────► Guardrails → RAG → LLM → Stream
+                                       (JD + resume + GitHub context)
 ```
 
 ---
@@ -55,10 +58,10 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 | **Backend** | FastAPI, Python 3.11, Uvicorn |
 | **Auth** | Email OTP (Redis) + JWT (PyJWT) |
 | **Queue** | Redis Streams (Upstash) |
-| **Database** | PostgreSQL (Supabase/Neon) via SQLAlchemy + asyncpg |
-| **Vector DB** | ChromaDB (persistent, keyed by resume_id) |
-| **LLM** | Shared backend API key via AsyncOpenAI |
-| **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 |
+| **Database** | PostgreSQL (Supabase) via SQLAlchemy + asyncpg |
+| **Vector DB** | PostgreSQL + pgvector (resume_chunks table) |
+| **LLM** | NVIDIA API (mistralai/mistral-medium-3.5-128b) via AsyncOpenAI |
+| **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 (384 dimensions) |
 | **Email** | Resend |
 | **Metrics** | Prometheus (prometheus-fastapi-instrumentator) |
 | **PDF Export** | html2canvas-pro + jsPDF |
@@ -75,26 +78,30 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   ├── api/
 │   │   ├── auth.py              # POST /api/auth/request-otp, verify-otp
 │   │   ├── upload.py            # POST /api/upload (auth + SHA-256 dedup)
-│   │   ├── match.py             # POST /api/match/:id/start, GET /api/reports
-│   │   ├── chat.py              # POST /api/chat (RAG, auth)
+│   │   ├── match.py             # POST /api/match, GET /api/reports
+│   │   ├── chat.py              # POST /api/chat/stream (RAG + guardrails + JD/GitHub context)
 │   │   ├── github.py            # GitHub data ingestion
-│   │   └── search.py            # Semantic search
+│   │   ├── search.py            # Semantic search
+│   │   └── session.py           # Session management
 │   ├── models/
 │   │   ├── user.py              # SQLAlchemy: users
 │   │   ├── resume.py            # SQLAlchemy: master_resumes
+│   │   ├── chunk.py             # SQLAlchemy: resume_chunks (pgvector)
 │   │   └── report.py            # SQLAlchemy: tailoring_reports
 │   ├── schemas/
 │   │   ├── auth.py, upload.py, match.py, report.py, chat.py, common.py
 │   ├── services/
-│   │   ├── db.py                # Engine + async session factory
-│   │   ├── redis_client.py      # Async Redis client (Upstash REST)
+│   │   ├── db.py                # Engine + async session factory + pgvector extension
+│   │   ├── redis_client.py      # Async Redis client (Upstash or local)
 │   │   ├── session_store.py     # Redis-backed conversation history
-│   │   ├── vector_store.py      # ChromaDB (resume_id keyed)
+│   │   ├── vector_store.py      # PostgreSQL + pgvector (resume_chunks table)
 │   │   ├── matcher.py           # Deterministic scoring engine
 │   │   ├── llm_service.py       # Career coach prompts, 3 LLM methods
+│   │   ├── guardrails.py        # Input validation, injection detection, output sanitization
 │   │   ├── parser.py            # PDF/DOCX text extraction
 │   │   ├── chunker.py           # Text chunking
 │   │   ├── embedding_service.py # Embedding generation
+│   │   ├── model_registry.py    # Model loading + caching
 │   │   ├── skills.py            # Regex skill extraction
 │   │   ├── semantic_matcher.py  # Semantic skill matching
 │   │   ├── weighted_skill_gap_analyzer.py
@@ -105,8 +112,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   ├── requirements.txt
 │   ├── .env.example
 │   ├── Dockerfile
-│   ├── Procfile
-│   └── docker-compose.yml
+│   └── Procfile
 │
 ├── frontend/recruiter-ui/
 │   ├── src/
@@ -126,6 +132,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   ├── Dockerfile
 │   └── nginx.conf
 │
+├── docker-compose.yml
 ├── render.yaml
 ├── MIGRATION_PLAN.md
 └── ARCHITECTURE.md
@@ -138,27 +145,32 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 ### Prerequisites
 
 - Python 3.11+, Node.js 18+
-- Upstash Redis (free tier)
-- Supabase or Neon PostgreSQL (free tier)
-- Resend API key (free tier)
+- Supabase account (PostgreSQL + pgvector)
+- Upstash account (Redis)
+- Resend account (email)
+- NVIDIA API key (LLM)
 
-### Backend
+### 1. Set up environment
 
 ```bash
 cd backend
-pip install -r requirements.txt
 cp .env.example .env   # fill in all env vars
+```
+
+### 2. Backend
+
+```bash
+pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-### Worker (separate terminal)
+### 3. Worker (separate terminal)
 
 ```bash
-cd backend
 python worker.py
 ```
 
-### Frontend
+### 4. Frontend (separate terminal)
 
 ```bash
 cd frontend/recruiter-ui
@@ -168,7 +180,7 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173).
 
-### Docker Compose (all services)
+### Docker Compose
 
 ```bash
 docker compose up --build
@@ -178,16 +190,18 @@ docker compose up --build
 
 ## Environment Variables
 
-| Variable | Purpose |
-|----------|---------|
-| `DATABASE_CONNECTION_STRING` | PostgreSQL connection URL |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token |
-| `LLM_API_KEY` | Shared backend LLM API key |
-| `JWT_SECRET` | Secret for signing JWT tokens |
-| `RESEND_API_KEY` | Resend email API key |
-| `RESEND_FROM_EMAIL` | Verified sender email |
-| `GITHUB_TOKEN` | (Optional) GitHub API token for higher rate limits |
+| Variable | Purpose | Example |
+|----------|---------|---------|
+| `DATABASE_CONNECTION_STRING` | PostgreSQL connection URL (Supabase) | `postgresql+asyncpg://...` |
+| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL | `https://...` |
+| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | `AXxx...` |
+| `LLM_API_KEY` | NVIDIA API key | `nvapi-...` |
+| `LLM_BASE_URL` | LLM provider base URL | `https://integrate.api.nvidia.com/v1` |
+| `LLM_MODEL` | Model name | `mistralai/mistral-medium-3.5-128b` |
+| `JWT_SECRET` | Secret for signing JWT tokens | 64-char hex string |
+| `RESEND_API_KEY` | Resend email API key | `re_...` |
+| `RESEND_FROM_EMAIL` | Verified sender email | `noreply@yourdomain.com` |
+| `GITHUB_TOKEN` | (Optional) GitHub API token | `ghp_...` |
 
 ---
 
@@ -213,7 +227,11 @@ docker compose up --build
 - LLM API key is server-side only (never sent to frontend)
 - JWT tokens stored in localStorage, validated on all protected endpoints
 - Rate limiting on OTP endpoints (3/email/5min, 10/IP/hr)
+- Rate limiting on chat (50 messages/session/hour)
 - SHA-256 resume deduplication prevents re-processing
+- Chat guardrails: prompt injection detection, off-topic blocking, output sanitization
+- Input validation: message length cap (2000 chars), injection pattern matching
+- Output filtering: code blocks, URLs, and markdown stripped from LLM responses
 
 ---
 

@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { uploadResumeAndJD, startMatch } from "../services/api";
+import { uploadResumeAndJD, startMatch, ingestGitHub } from "../services/api";
 import useBackendStatus from "../hooks/useBackendStatus";
 
 const STEPS = { INPUT: 0, PROCESSING: 1, QUEUED: 2 };
@@ -9,6 +9,8 @@ export default function UploadPage() {
   const [step, setStep] = useState(STEPS.INPUT);
   const [resumeFile, setResumeFile] = useState(null);
   const [jdText, setJdText] = useState("");
+  const [githubUsername, setGithubUsername] = useState("");
+  const [githubToken, setGithubToken] = useState("");
   const [statusMsg, setStatusMsg] = useState("");
   const [error, setError] = useState("");
   const [dragOver, setDragOver] = useState(false);
@@ -20,7 +22,7 @@ export default function UploadPage() {
     localStorage.removeItem("auth_token");
     localStorage.removeItem("user_id");
     localStorage.removeItem("user_email");
-    navigate("/auth", { replace: true });
+    window.location.href = "/";
   };
 
   const handleDrop = useCallback((e) => {
@@ -39,15 +41,19 @@ export default function UploadPage() {
     setError("");
     setStatusMsg("Uploading resume...");
     try {
-      const uploadResult = await uploadResumeAndJD(resumeFile, jdText);
+      const uploadResult = await uploadResumeAndJD(resumeFile);
+      if (githubUsername.trim()) {
+        setStatusMsg("Ingesting GitHub repos...");
+        await ingestGitHub(uploadResult.resume_id, githubUsername.trim(), githubToken.trim() || undefined);
+      }
       setStatusMsg("Queuing analysis job...");
-      await startMatch(uploadResult.upload_id);
+      await startMatch(uploadResult.resume_id, jdText);
       setStep(STEPS.QUEUED);
     } catch (err) {
       setError(err.message || "Something went wrong");
       setStep(STEPS.INPUT);
     }
-  }, [resumeFile, jdText]);
+  }, [resumeFile, jdText, githubUsername]);
 
   const steps = [
     { label: "Upload", done: step > STEPS.INPUT },
@@ -173,6 +179,36 @@ export default function UploadPage() {
                 )}
               </div>
 
+              <div>
+                <label className="text-xs font-medium text-gray-400 mb-2 block">
+                  GitHub Username <span className="text-gray-600">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. octocat"
+                  value={githubUsername}
+                  onChange={(e) => { setGithubUsername(e.target.value); setError(""); }}
+                  className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 text-sm transition placeholder:text-gray-600"
+                />
+                <p className="text-[10px] text-gray-600 mt-1">Public repos will be analyzed for skill signals</p>
+              </div>
+
+              {githubUsername.trim() && (
+                <div>
+                  <label className="text-xs font-medium text-gray-400 mb-2 block">
+                    GitHub Token <span className="text-gray-600">(optional)</span>
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="ghp_xxxxxxxxxxxx"
+                    value={githubToken}
+                    onChange={(e) => setGithubToken(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 text-sm transition placeholder:text-gray-600"
+                  />
+                  <p className="text-[10px] text-gray-600 mt-1">For private repos and higher rate limits</p>
+                </div>
+              )}
+
               {error && (
                 <div className="bg-red-900/20 border border-red-800/30 rounded-xl px-4 py-2.5 flex items-center gap-2">
                   <svg className="w-4 h-4 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -216,7 +252,7 @@ export default function UploadPage() {
               <div>
                 <p className="text-sm font-medium text-green-300">Analysis queued</p>
                 <p className="text-xs text-gray-500 mt-1 max-w-xs mx-auto">
-                  Your resume is being analyzed. Check your email when it's ready, or head to the dashboard.
+                  Your resume is being analyzed. Head to the dashboard to see results.
                 </p>
               </div>
               <div className="flex gap-3 justify-center">
@@ -227,7 +263,7 @@ export default function UploadPage() {
                   View Dashboard
                 </button>
                 <button
-                  onClick={() => { setStep(STEPS.INPUT); setResumeFile(null); setJdText(""); }}
+                  onClick={() => { setStep(STEPS.INPUT); setResumeFile(null); setJdText(""); setGithubUsername(""); setGithubToken(""); }}
                   className="px-5 py-2.5 rounded-xl font-medium text-sm bg-white/5 border border-white/10 hover:bg-white/10 transition-all"
                 >
                   New Analysis

@@ -42,7 +42,7 @@ function StreamingMessage({ content }) {
   );
 }
 
-export default function ChatSection({ sessionId, disabled, provider, model, apiKey, baseUrl }) {
+export default function ChatSection({ resumeId, reportId, disabled }) {
   const [messages, setMessages] = useState([]);
   const [currentAI, setCurrentAI] = useState("");
   const [input, setInput] = useState("");
@@ -61,10 +61,14 @@ export default function ChatSection({ sessionId, disabled, provider, model, apiK
     setCurrentAI("");
 
     try {
+      const token = localStorage.getItem("token");
       const res = await fetch(`${API}/chat/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, message, provider, model, api_key: apiKey, base_url: baseUrl }),
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ resume_id: resumeId, report_id: reportId, message }),
       });
 
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
@@ -110,7 +114,7 @@ export default function ChatSection({ sessionId, disabled, provider, model, apiK
       console.error(err);
     }
     setLoading(false);
-  }, [sessionId, provider, model, apiKey, baseUrl]);
+  }, [resumeId, reportId]);
 
   const handleSend = () => {
     const text = input.trim();

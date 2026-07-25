@@ -2,19 +2,17 @@ import hashlib
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, UploadFile, File, Depends, Header
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.parser import ParserService
-from services.chunker import ChunkerService
-from services.embedding_service import embedder
-from services.vector_store import vector_store
-from services.skills import SkillExtractionService
-from services.db import get_db
+from core.dependencies import get_current_user
+from services.database import get_db
+from services.parsing import ParserService, ChunkerService, SkillExtractionService
+from services.embedding import embedder
+from services.storage import vector_store
 from models.resume import MasterResume
 from schemas.upload import UploadResponse, UploadDuplicateResponse
-from schemas.common import ErrorResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,18 +26,10 @@ def _hash_file(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-async def _get_user_id(authorization: str = Header(...)) -> UUID:
-    import jwt
-    import os
-    token = authorization.replace("Bearer ", "")
-    payload = jwt.decode(token, os.environ.get("JWT_SECRET", ""), algorithms=["HS256"])
-    return UUID(payload["sub"])
-
-
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    user_id: UUID = Depends(_get_user_id),
+    user_id: UUID = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     try:
@@ -66,17 +56,16 @@ async def upload_document(
         chunks = chunker.chunk_text(text)
 
         if not chunks:
-            return ErrorResponse(error="Chunking failed")
+            raise HTTPException(status_code=400, detail="Chunking failed")
 
         embeddings = embedder.embed_documents(chunks)
         if not embeddings:
-            return ErrorResponse(error="Embedding failed")
+            raise HTTPException(status_code=400, detail="Embedding failed")
 
         resume = MasterResume(
             user_id=user_id,
             file_hash=file_hash,
             raw_text=text,
-            chroma_resume_id="",
             filename=file.filename,
         )
         db.add(resume)
@@ -87,15 +76,9 @@ async def upload_document(
             db=db,
             documents=chunks,
             embeddings=embeddings,
-            metadatas=[
-                {"source": "resume", "skills": ", ".join(resume_skills)}
-                for _ in chunks
-            ],
+            metadatas=[{"source": "resume", "skills": ", ".join(resume_skills)} for _ in chunks],
             resume_id=str(resume.id),
         )
-        await db.commit()
-
-        resume.chroma_resume_id = str(resume.id)
         await db.commit()
 
         logger.info(f"Resume {resume.id}: {len(chunks)} chunks stored for {file.filename}")
@@ -103,4 +86,4 @@ async def upload_document(
 
     except Exception as e:
         logger.error(f"Upload failed: {e}")
-        return ErrorResponse(error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))

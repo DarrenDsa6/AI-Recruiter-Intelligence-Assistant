@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
-from services.vector_store import vector_store
-from services.embedding_service import embedder
-from services.db import get_db
+import numpy as np
+from fastapi import APIRouter, Depends
+from sklearn.metrics.pairwise import cosine_similarity
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from services.database import get_db
+from services.embedding import embedder
+from services.storage import vector_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -24,19 +27,10 @@ async def search_documents(session_id: str, query: str, top_k: int = 5, db: Asyn
         if not doc_embeddings:
             return {"results": []}
 
-        import numpy as np
-        from sklearn.metrics.pairwise import cosine_similarity
-
         scores = cosine_similarity([query_emb], doc_embeddings)[0]
         top_indices = np.argsort(scores)[-top_k:][::-1]
 
-        results = []
-        for idx in top_indices:
-            results.append({
-                "text": docs[idx],
-                "score": round(float(scores[idx]), 4)
-            })
-
+        results = [{"text": docs[idx], "score": round(float(scores[idx]), 4)} for idx in top_indices]
         return {"query": query, "results": results}
     except Exception as e:
         logger.error(f"Search failed: {e}")

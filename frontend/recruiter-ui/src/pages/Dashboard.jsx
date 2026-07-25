@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { fetchReports, fetchReport, getMatchStatus, chatWithAI } from "../services/api";
+import { fetchReports, fetchReport, getReportStatus, chatWithAI } from "../services/api";
+import GithubSection from "../components/GithubSection";
 
 const STATUS_POLL_INTERVAL = 3000;
 
@@ -42,14 +43,15 @@ export default function Dashboard() {
     localStorage.removeItem("auth_token");
     localStorage.removeItem("user_id");
     localStorage.removeItem("user_email");
-    navigate("/auth", { replace: true });
+    window.location.href = "/";
   };
 
   const loadReports = useCallback(async () => {
     try {
       const data = await fetchReports();
-      setReports(data.reports || []);
-      return data.reports || [];
+      const list = Array.isArray(data) ? data : data.reports || [];
+      setReports(list);
+      return list;
     } catch {
       return [];
     }
@@ -76,7 +78,7 @@ export default function Dashboard() {
       if (reportId) {
         await loadReport(reportId);
       } else if (allReports.length > 0) {
-        navigate(`/dashboard/${allReports[0].report_id}`, { replace: true });
+        navigate(`/dashboard/${allReports[0].id}`, { replace: true });
         return;
       }
       setLoading(false);
@@ -93,9 +95,9 @@ export default function Dashboard() {
     const timer = setInterval(async () => {
       if (cancelled) return;
       try {
-        const statusData = await getMatchStatus(activeReport.upload_id || activeReport.report_id);
+        const statusData = await getReportStatus(activeReport.id);
         if (statusData.status === "completed" || statusData.status === "failed") {
-          await loadReport(activeReport.report_id);
+          await loadReport(activeReport.id);
           clearInterval(timer);
         }
       } catch {
@@ -104,7 +106,7 @@ export default function Dashboard() {
     }, STATUS_POLL_INTERVAL);
 
     return () => { cancelled = true; clearInterval(timer); };
-  }, [activeReport?.report_id, activeReport?.status]);
+  }, [activeReport?.id, activeReport?.status]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -122,7 +124,7 @@ export default function Dashboard() {
     try {
       const data = await chatWithAI({
         message: userMsg,
-        report_id: activeReport.report_id,
+        report_id: activeReport.id,
         selected_skill: selectedSkill,
         history: chatMessages.map((m) => ({ role: m.role, content: m.content })),
       });
@@ -141,12 +143,6 @@ export default function Dashboard() {
     month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
   });
 
-  const scoreColor = (score) => {
-    if (score >= 80) return "from-green-500 to-emerald-500";
-    if (score >= 60) return "from-yellow-500 to-amber-500";
-    return "from-orange-500 to-red-500";
-  };
-
   const scoreRing = (score) => {
     const pct = Math.min(score || 0, 100);
     const r = 38;
@@ -161,6 +157,14 @@ export default function Dashboard() {
     if (status === "failed") return `${base} bg-red-900/40 text-red-300 border border-red-700/30`;
     return `${base} bg-blue-900/40 text-blue-300 border border-blue-700/30`;
   };
+
+  const analysis = activeReport?.report || {};
+  const ats_score = analysis.ats_score;
+  const summary = analysis.summary;
+  const strengths = analysis.strengths || [];
+  const gaps = analysis.improvement_areas || analysis.gaps || [];
+  const recommendations = analysis.keyword_suggestions || analysis.recommendations || [];
+  const actionableRewrites = activeReport?.rewrites || [];
 
   if (loading) {
     return (
@@ -205,13 +209,13 @@ export default function Dashboard() {
           )}
           {reports.map((r) => (
             <button
-              key={r.report_id}
-              onClick={() => navigate(`/dashboard/${r.report_id}`)}
+              key={r.id}
+              onClick={() => navigate(`/dashboard/${r.id}`)}
               className={`w-full text-left px-4 py-3 border-b border-white/5 transition-all hover:bg-white/5 ${
-                r.report_id === activeReport?.report_id ? "bg-white/[0.07] border-l-2 border-l-blue-500" : "border-l-2 border-l-transparent"
+                r.id === activeReport?.id ? "bg-white/[0.07] border-l-2 border-l-blue-500" : "border-l-2 border-l-transparent"
               }`}
             >
-              <p className="text-xs text-gray-300 truncate font-medium">{r.job_title || "Untitled Position"}</p>
+              <p className="text-xs text-gray-300 truncate font-medium">{r.filename || "Untitled Position"}</p>
               <div className="flex items-center justify-between mt-1.5">
                 <span className="text-[10px] text-gray-600">{formatDate(r.created_at)}</span>
                 <span className={statusBadge(r.status)}>{r.status}</span>
@@ -291,102 +295,101 @@ export default function Dashboard() {
           <div className="max-w-4xl mx-auto p-8 space-y-6">
             <div className="flex items-start justify-between animate-fade-in">
               <div>
-                <h1 className="text-xl font-bold">{activeReport.job_title || "Resume Analysis"}</h1>
+                <h1 className="text-xl font-bold">{activeReport.filename || activeReport.jd_text?.slice(0, 60) || "Resume Analysis"}</h1>
                 <p className="text-xs text-gray-500 mt-1">
                   Analyzed {formatDate(activeReport.created_at)}
-                  {activeReport.candidate_name && ` for ${activeReport.candidate_name}`}
                 </p>
               </div>
-              <div className="relative flex items-center justify-center">
-                <svg width="88" height="88" className="-rotate-90">
-                  <circle cx="44" cy="44" r={scoreRing(activeReport.ats_score).r} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="6" />
-                  <circle
-                    cx="44" cy="44" r={scoreRing(activeReport.ats_score).r}
-                    fill="none"
-                    stroke="url(#scoreGradient)"
-                    strokeWidth="6"
-                    strokeDasharray={scoreRing(activeReport.ats_score).circ}
-                    strokeDashoffset={scoreRing(activeReport.ats_score).offset}
-                    strokeLinecap="round"
-                    className="transition-all duration-1000"
-                  />
-                  <defs>
-                    <linearGradient id="scoreGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                      <stop offset="0%" stopColor={activeReport.ats_score >= 80 ? "#22c55e" : activeReport.ats_score >= 60 ? "#eab308" : "#f97316"} />
-                      <stop offset="100%" stopColor={activeReport.ats_score >= 80 ? "#10b981" : activeReport.ats_score >= 60 ? "#f59e0b" : "#ef4444"} />
-                    </linearGradient>
-                  </defs>
-                </svg>
-                <div className="absolute text-center">
-                  <p className={`text-2xl font-bold ${activeReport.ats_score >= 80 ? "text-green-400" : activeReport.ats_score >= 60 ? "text-yellow-400" : "text-orange-400"}`}>
-                    {activeReport.ats_score != null ? activeReport.ats_score : "—"}
-                  </p>
-                  <p className="text-[10px] text-gray-500">ATS Score</p>
+              {ats_score != null && (
+                <div className="relative flex items-center justify-center">
+                  <svg width="88" height="88" className="-rotate-90">
+                    <circle cx="44" cy="44" r={scoreRing(ats_score).r} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="6" />
+                    <circle
+                      cx="44" cy="44" r={scoreRing(ats_score).r}
+                      fill="none"
+                      stroke="url(#scoreGradient)"
+                      strokeWidth="6"
+                      strokeDasharray={scoreRing(ats_score).circ}
+                      strokeDashoffset={scoreRing(ats_score).offset}
+                      strokeLinecap="round"
+                      className="transition-all duration-1000"
+                    />
+                    <defs>
+                      <linearGradient id="scoreGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                        <stop offset="0%" stopColor={ats_score >= 80 ? "#22c55e" : ats_score >= 60 ? "#eab308" : "#f97316"} />
+                        <stop offset="100%" stopColor={ats_score >= 80 ? "#10b981" : ats_score >= 60 ? "#f59e0b" : "#ef4444"} />
+                      </linearGradient>
+                    </defs>
+                  </svg>
+                  <div className="absolute text-center">
+                    <p className={`text-2xl font-bold ${ats_score >= 80 ? "text-green-400" : ats_score >= 60 ? "text-yellow-400" : "text-orange-400"}`}>
+                      {ats_score}
+                    </p>
+                    <p className="text-[10px] text-gray-500">ATS Score</p>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
-            {activeReport.summary && (
+            {summary && (
               <ReportSection title="Summary" color="bg-blue-900/30 text-blue-400" icon="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776" delay={0}>
-                <p className="text-sm text-gray-400 leading-relaxed">{activeReport.summary}</p>
+                <p className="text-sm text-gray-400 leading-relaxed">{summary}</p>
               </ReportSection>
             )}
 
-            {activeReport.strengths?.length > 0 && (
+            {strengths.length > 0 && (
               <ReportSection title="Strengths" color="bg-green-900/30 text-green-400" icon="M4.5 12.75l6 6 9-13.5" delay={80}>
                 <ul className="space-y-2.5">
-                  {activeReport.strengths.map((s, i) => (
+                  {strengths.map((s, i) => (
                     <li key={i} className="flex items-start gap-2.5 text-sm text-gray-400">
                       <div className="w-5 h-5 rounded-md bg-green-900/30 flex items-center justify-center shrink-0 mt-0.5">
                         <svg className="w-3 h-3 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
                         </svg>
                       </div>
-                      {s}
+                      {typeof s === "string" ? s : s.text || s.description || JSON.stringify(s)}
                     </li>
                   ))}
                 </ul>
               </ReportSection>
             )}
 
-            {activeReport.gaps?.length > 0 && (
+            {gaps.length > 0 && (
               <ReportSection title="Skill Gaps" color="bg-orange-900/30 text-orange-400" icon="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" delay={160}>
                 <ul className="space-y-2.5">
-                  {activeReport.gaps.map((g, i) => (
+                  {gaps.map((g, i) => (
                     <li key={i} className="flex items-start gap-2.5 text-sm text-gray-400">
                       <div className="w-5 h-5 rounded-md bg-orange-900/30 flex items-center justify-center shrink-0 mt-0.5">
                         <svg className="w-3 h-3 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
                         </svg>
                       </div>
-                      {g}
+                      {typeof g === "string" ? g : g.text || g.description || JSON.stringify(g)}
                     </li>
                   ))}
                 </ul>
               </ReportSection>
             )}
 
-            {activeReport.recommendations?.length > 0 && (
-              <ReportSection title="Recommendations" color="bg-purple-900/30 text-purple-400" icon="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" delay={240}>
-                <ul className="space-y-2.5">
-                  {activeReport.recommendations.map((r, i) => (
-                    <li key={i} className="flex items-start gap-2.5 text-sm text-gray-400">
-                      <div className="w-5 h-5 rounded-md bg-purple-900/30 flex items-center justify-center shrink-0 mt-0.5">
-                        <svg className="w-3 h-3 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
-                        </svg>
-                      </div>
-                      {r}
-                    </li>
+            {recommendations.length > 0 && (
+              <ReportSection title="Keyword Suggestions" color="bg-purple-900/30 text-purple-400" icon="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" delay={240}>
+                <div className="space-y-3">
+                  {recommendations.map((r, i) => (
+                    <div key={i} className="bg-white/[0.03] border border-white/5 rounded-xl p-4 space-y-2">
+                      {r.original && (
+                        <p className="text-xs text-gray-500 line-through leading-relaxed">{r.original}</p>
+                      )}
+                      <p className="text-sm text-gray-300 leading-relaxed">{r.suggested_rewrite || r.suggestion || JSON.stringify(r)}</p>
+                    </div>
                   ))}
-                </ul>
+                </div>
               </ReportSection>
             )}
 
-            {activeReport.actionable_rewrites?.length > 0 && (
+            {actionableRewrites.length > 0 && (
               <ReportSection title="Actionable Rewrites" color="bg-cyan-900/30 text-cyan-400" icon="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" delay={320}>
                 <div className="space-y-3">
-                  {activeReport.actionable_rewrites.map((rewrite, i) => (
+                  {actionableRewrites.map((rewrite, i) => (
                     <div key={i} className="bg-white/[0.03] border border-white/5 rounded-xl p-4 space-y-2">
                       {rewrite.section && (
                         <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-medium bg-white/5 text-gray-400 border border-white/5">
@@ -401,6 +404,10 @@ export default function Dashboard() {
                   ))}
                 </div>
               </ReportSection>
+            )}
+
+            {activeReport.github_analysis && (
+              <GithubSection data={activeReport.github_analysis} />
             )}
 
             <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl animate-slide-up" style={{ animationDelay: "400ms" }}>

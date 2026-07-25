@@ -1,11 +1,12 @@
 import uuid
 from datetime import datetime, timezone
+
 from sqlalchemy import Text, DateTime, ForeignKey, Integer, Index
-from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from pgvector.sqlalchemy import Vector
+from sqlalchemy.orm import Mapped, mapped_column
 
-from models.user import Base
+from models.base import Base
 
 
 class ResumeChunk(Base):

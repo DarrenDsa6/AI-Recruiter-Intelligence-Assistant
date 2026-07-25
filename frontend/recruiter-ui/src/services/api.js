@@ -25,26 +25,11 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
   return res.json();
 }
 
-export async function requestOTP(email) {
-  return request("/api/auth/request-otp", {
-    method: "POST",
-    body: { email },
-  });
-}
-
-export async function verifyOTP(email, code) {
-  return request("/api/auth/verify-otp", {
-    method: "POST",
-    body: { email, code },
-  });
-}
-
-export async function uploadResumeAndJD(resumeFile, jdText) {
+export async function uploadResumeAndJD(resumeFile) {
   const token = localStorage.getItem("auth_token");
   if (!token) throw new Error("Not authenticated");
   const formData = new FormData();
-  formData.append("resume_file", resumeFile);
-  formData.append("jd_text", jdText);
+  formData.append("file", resumeFile);
   const res = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
@@ -57,21 +42,22 @@ export async function uploadResumeAndJD(resumeFile, jdText) {
   return res.json();
 }
 
-export async function startMatch(uploadId) {
-  return request(`/api/match/${uploadId}/start`, {
+export async function startMatch(resumeId, jdText) {
+  return request("/api/match", {
     method: "POST",
     headers: getAuthHeaders(),
+    body: { resume_id: resumeId, jd_text: jdText },
   });
 }
 
-export async function getMatchStatus(uploadId) {
-  return request(`/api/match/${uploadId}/status`, {
+export async function getReportStatus(reportId) {
+  return request(`/api/reports/${reportId}/status`, {
     headers: getAuthHeaders(),
   });
 }
 
-export async function fetchReports({ limit = 50, offset = 0 } = {}) {
-  return request(`/api/reports?limit=${limit}&offset=${offset}`, {
+export async function fetchReports() {
+  return request("/api/reports", {
     headers: getAuthHeaders(),
   });
 }
@@ -83,13 +69,23 @@ export async function fetchReport(reportId) {
 }
 
 export async function chatWithAI(payload) {
-  return request("/api/chat", {
+  return request("/api/chat/stream", {
     method: "POST",
     headers: getAuthHeaders(),
     body: payload,
   });
 }
 
+export async function ingestGitHub(resumeId, username, token) {
+  const params = new URLSearchParams();
+  if (token) params.append("token", token);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return request(`/api/github/${resumeId}/${encodeURIComponent(username)}${qs}`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+  });
+}
+
 export async function healthCheck() {
-  return request("/health");
+  return request("/api/health");
 }

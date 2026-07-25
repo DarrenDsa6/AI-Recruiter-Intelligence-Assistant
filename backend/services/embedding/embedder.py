@@ -1,42 +1,42 @@
 import logging
 
-from services.model_registry import ModelRegistry, DOC_EMBEDDING_MODEL
+from config.constants import DOC_EMBEDDING_MODEL
+from services.embedding.model_registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
+
 class EmbedderService:
     def __init__(self):
-        logger.info("Loading document embedding model...")
         self.model = ModelRegistry.get(DOC_EMBEDDING_MODEL)
-        self.embedding_cache = {}
+        self._cache: dict[str, object] = {}
 
-    def embed_documents(self, documents):
+    def embed_documents(self, documents: list[str]) -> list[list[float]]:
         embeddings = self.model.encode(documents)
         return embeddings.tolist()
 
-    def get_embeddings(self, texts):
+    def get_embeddings(self, texts: list[str]) -> list[object]:
         embeddings = []
         new_texts = []
         new_keys = []
 
         for text in texts:
             key = text.lower().strip()
-            if key in self.embedding_cache:
-                embeddings.append(self.embedding_cache[key])
+            if key in self._cache:
+                embeddings.append(self._cache[key])
             else:
                 new_texts.append(key)
                 new_keys.append(key)
                 embeddings.append(None)
 
         if new_texts:
-            logger.info(f"Embedding {len(new_texts)} new texts...")
+            logger.info(f"Embedding {len(new_texts)} new texts")
             new_vectors = self.model.encode(new_texts, normalize_embeddings=True)
             idx = 0
             for i in range(len(embeddings)):
                 if embeddings[i] is None:
                     vec = new_vectors[idx]
-                    key = new_keys[idx]
-                    self.embedding_cache[key] = vec
+                    self._cache[new_keys[idx]] = vec
                     embeddings[i] = vec
                     idx += 1
 

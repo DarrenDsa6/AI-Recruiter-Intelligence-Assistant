@@ -10,7 +10,7 @@ export default function useBackendStatus() {
 
     async function check() {
       try {
-        const res = await fetch(`${API_URL}/health`);
+        const res = await fetch(`${API_URL}/api/health`);
         if (!cancelled) {
           setStatus({ connected: res.ok, loading: false });
         }

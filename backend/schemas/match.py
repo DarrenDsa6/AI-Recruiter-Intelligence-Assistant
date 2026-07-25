@@ -10,4 +10,4 @@ class MatchRequest(BaseModel):
 class MatchAccepted(BaseModel):
     report_id: UUID
     status: str = "pending"
-    message: str = "Analysis queued. Check your email in ~2 minutes."
+    message: str = "Analysis queued. Check the dashboard for results."

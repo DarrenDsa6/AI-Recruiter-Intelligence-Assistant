@@ -2,15 +2,16 @@ import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.redis_client import get_redis
-from services.db import get_db
+from core.dependencies import get_current_user
+from services.database import get_db
+from services.redis import get_redis
 from models.report import TailoringReport
+from models.resume import MasterResume
 from schemas.match import MatchRequest, MatchAccepted
-from schemas.common import ErrorResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -18,22 +19,12 @@ router = APIRouter()
 JOB_STREAM = "tailoring-jobs"
 
 
-async def _get_user_id(authorization: str = Header(...)) -> UUID:
-    import jwt
-    import os
-    token = authorization.replace("Bearer ", "")
-    payload = jwt.decode(token, os.environ.get("JWT_SECRET", ""), algorithms=["HS256"])
-    return UUID(payload["sub"])
-
-
 @router.post("/match", response_model=MatchAccepted, status_code=202)
 async def match_job_description(
     body: MatchRequest,
-    user_id: UUID = Depends(_get_user_id),
+    user_id: UUID = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Validate resume exists for this user
-    from models.resume import MasterResume
     result = await db.execute(
         select(MasterResume).where(
             MasterResume.id == body.resume_id,
@@ -42,9 +33,8 @@ async def match_job_description(
     )
     resume = result.scalar_one_or_none()
     if not resume:
-        return ErrorResponse(error="Resume not found")
+        raise HTTPException(status_code=404, detail="Resume not found")
 
-    # Create report record
     report = TailoringReport(
         user_id=user_id,
         resume_id=body.resume_id,
@@ -55,7 +45,6 @@ async def match_job_description(
     await db.commit()
     await db.refresh(report)
 
-    # Push job to Redis Stream
     redis = await get_redis()
     job_payload = json.dumps({
         "report_id": str(report.id),
@@ -63,16 +52,15 @@ async def match_job_description(
         "resume_id": str(body.resume_id),
         "jd_text": body.jd_text,
     })
-    await redis.xadd(JOB_STREAM, {"payload": job_payload})
+    await redis.xadd(JOB_STREAM, data={"payload": job_payload})
 
     logger.info(f"Job queued: report={report.id} resume={body.resume_id}")
-
     return MatchAccepted(report_id=report.id)
 
 
 @router.get("/reports")
 async def list_reports(
-    user_id: UUID = Depends(_get_user_id),
+    user_id: UUID = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -82,7 +70,6 @@ async def list_reports(
     )
     reports = result.scalars().all()
 
-    from models.resume import MasterResume
     items = []
     for r in reports:
         resume_result = await db.execute(
@@ -103,7 +90,7 @@ async def list_reports(
 @router.get("/reports/{report_id}")
 async def get_report(
     report_id: UUID,
-    user_id: UUID = Depends(_get_user_id),
+    user_id: UUID = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -114,7 +101,7 @@ async def get_report(
     )
     report = result.scalar_one_or_none()
     if not report:
-        return ErrorResponse(error="Report not found")
+        raise HTTPException(status_code=404, detail="Report not found")
 
     return {
         "id": report.id,
@@ -134,7 +121,7 @@ async def get_report(
 @router.get("/reports/{report_id}/status")
 async def get_report_status(
     report_id: UUID,
-    user_id: UUID = Depends(_get_user_id),
+    user_id: UUID = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
@@ -145,6 +132,6 @@ async def get_report_status(
     )
     row = result.one_or_none()
     if not row:
-        return ErrorResponse(error="Report not found")
+        raise HTTPException(status_code=404, detail="Report not found")
 
     return {"id": row[0], "status": row[1]}

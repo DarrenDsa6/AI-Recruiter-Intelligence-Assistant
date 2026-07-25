@@ -1,6 +1,6 @@
 # Architecture
 
-> AI Resume Tailor -- an asynchronous, candidate-facing platform for resume tailoring with email OTP auth, Redis Streams job queue, and career coach AI.
+> AI Resume Tailor -- an asynchronous, candidate-facing platform for resume tailoring with email OTP auth, Redis Streams job queue, pgvector embeddings, and career coach AI with chat guardrails.
 
 ---
 
@@ -57,7 +57,7 @@ POST /api/upload (authenticated)
 ### 3. Job Submission (Async)
 
 ```
-POST /api/match/:upload_id/start (authenticated)
+POST /api/match (authenticated)
         │
         ├── Create tailoring_reports row (status: "pending")
         ├── Push to Redis Stream "tailoring-jobs":
@@ -132,22 +132,39 @@ Dashboard polls → GET /api/reports/:report_id
               ├── Strengths / Gaps / Recommendations
               ├── Actionable Rewrites (rewritten bullets)
               ├── Interview Questions (gap-focused)
-              └── Career Coach Chat (RAG over resume chunks)
+              └── Career Coach Chat (RAG over resume + JD + GitHub)
 ```
 
-### 6. Follow-Up Chat
+### 6. Follow-Up Chat (with Guardrails)
 
 ```
 User types question
         │
         ▼
-POST /api/chat (authenticated)
+POST /api/chat/stream (authenticated)
         │
+        ├── GUARDRAILS (input):
+        │     ├── Validate message length (max 2000 chars)
+        │     ├── Prompt injection detection (16 patterns)
+        │     ├── Off-topic keyword blocking (requires 2+ matches)
+        │     └── Rate limiting (50 msgs/session/hour via Redis)
+        │
+        ├── Fetch report → get jd_text + github_analysis
         ├── Load resume chunks from PostgreSQL (resume_chunks, pgvector cosine search)
         ├── Load conversation history from Redis session store
         ├── Embed query (all-MiniLM-L6-v2)
         ├── Retrieve top-5 relevant chunks (pgvector cosine_distance)
-        ├── Build LLM messages: system (RAG context) + history + question
+        ├── Build LLM system prompt:
+        │     ├── Career coach persona + strict rules
+        │     ├── JD context (from tailoring_reports.jd_text)
+        │     ├── GitHub context (from tailoring_reports.github_analysis)
+        │     ├── Resume RAG context (from resume_chunks)
+        │     └── Guardrail rules (no code, no URLs, no off-topic)
+        │
+        ├── GUARDRAILS (output):
+        │     ├── Strip code blocks (```...``` and `inline`)
+        │     ├── Strip URLs and markdown links
+        │     └── Collapse excessive whitespace
         │
         └── Stream response via SSE
 ```
@@ -164,8 +181,7 @@ POST /api/chat (authenticated)
 │ email       TEXT    │     │ id           UUID PK      │
 │ created_at  TIMESTAMPTZ│  │ file_hash    TEXT         │
 │ last_login  TIMESTAMPTZ│  │ raw_text     TEXT         │
-└─────────────────────┘     │ chroma_resume_id TEXT     │
-                            │ filename       TEXT       │
+└─────────────────────┘     │ filename       TEXT       │
                             │ created_at     TIMESTAMPTZ│
                             └──────────┬───────────────┘
                                        │
@@ -191,6 +207,7 @@ POST /api/chat (authenticated)
 │ jd_text         TEXT     │
 │ status          TEXT     │  pending | processing | completed | failed
 │ match_result    JSONB    │
+│ github_analysis JSONB    │
 │ report          JSONB    │
 │ questions       JSONB    │
 │ rewrites        JSONB    │
@@ -222,13 +239,45 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 | **Backend** | FastAPI, Python 3.11, Uvicorn |
 | **Auth** | Email OTP (Redis) + JWT (PyJWT) |
 | **Queue** | Redis Streams (Upstash) |
-| **Database + Vectors** | PostgreSQL + pgvector (Supabase/Neon) via SQLAlchemy + asyncpg |
+| **Database + Vectors** | PostgreSQL + pgvector (Supabase) via SQLAlchemy + asyncpg |
 | **LLM** | NVIDIA API (mistralai/mistral-medium-3.5-128b) via AsyncOpenAI |
 | **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 (384 dimensions) |
 | **Email** | Resend |
 | **Metrics** | Prometheus (prometheus-fastapi-instrumentator) |
 | **PDF Export** | html2canvas-pro + jsPDF |
 | **Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
+
+---
+
+## Chat Guardrails
+
+The chat endpoint (`POST /api/chat/stream`) includes multiple layers of protection:
+
+### Input Guardrails
+
+| Guardrail | Description |
+|-----------|-------------|
+| **Message length** | Max 2000 characters per message |
+| **Prompt injection** | Detects 16 patterns: "ignore previous instructions", "you are now...", "jailbreak", "DAN mode", etc. |
+| **Off-topic blocking** | Rejects messages with 2+ keyword matches for weather, sports, politics, recipes, dating, hacking, etc. |
+| **Rate limiting** | 50 messages per session per hour via Redis INCR + TTL |
+
+### Output Guardrails
+
+| Guardrail | Description |
+|-----------|-------------|
+| **Code block stripping** | Removes \`\`\`...\`\`\` and \`inline\` code from LLM output |
+| **URL stripping** | Removes hyperlinks and markdown links |
+| **Whitespace cleanup** | Collapses 3+ consecutive newlines |
+
+### System Prompt Rules
+
+- Only answers resume/JD/skills/interview/career questions
+- Never writes code or explains programming
+- Never answers general knowledge questions
+- Off-topic questions get a canned redirect response
+- No fabricated information -- must cite evidence from resume/JD
+- No URLs or code formatting in responses
 
 ---
 
@@ -254,6 +303,10 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 
 10. **pgvector cosine search.** Vector similarity queries use pgvector's `<=>` operator, keeping everything in SQL with no external dependencies.
 
+11. **JD + GitHub context in chat.** The chat system prompt includes the job description and GitHub analysis from the report, enabling questions like "how does my resume compare to this JD?" or "which GitHub projects are most relevant?"
+
+12. **Multi-layer guardrails.** Input validation (length, injection, off-topic) + output sanitization (code, URLs) + rate limiting protect against abuse while keeping responses focused.
+
 ---
 
 ## Production Features
@@ -269,6 +322,8 @@ document_score = cosine_similarity(JD_embedding, resume_embedding)
 - Graceful shutdown (DB pool, Redis connections)
 - Retry with exponential backoff in worker (3 attempts)
 - Dead letter stream for failed jobs
+- Chat guardrails: injection detection, off-topic blocking, output sanitization
+- Rate limiting on chat (50 msgs/session/hour)
 - Docker Compose for local development (backend + worker + frontend)
 
 ---
