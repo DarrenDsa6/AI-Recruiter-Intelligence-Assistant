@@ -116,13 +116,23 @@ async def main():
             )
 
             if not entries:
-                await asyncio.sleep(60)
+                await asyncio.sleep(10)
                 continue
 
             for stream_name, messages in entries:
                 for msg_id, data in messages:
-                    payload = json.loads(data.get("payload", "{}"))
-                    retries = int(data.get("retries", 0))
+                    logger.info(f"Raw entry: msg_id={msg_id}, data_type={type(data)}, data={data}")
+
+                    try:
+                        raw_payload = data.get("payload", "{}") if isinstance(data, dict) else data
+                        if isinstance(raw_payload, bytes):
+                            raw_payload = raw_payload.decode("utf-8")
+                        payload = json.loads(raw_payload)
+                        retries = int(data.get("retries", 0)) if isinstance(data, dict) else 0
+                    except Exception as parse_err:
+                        logger.error(f"Failed to parse entry: {parse_err}, raw={data}")
+                        await redis.xack(WORKER_STREAM_NAME, WORKER_CONSUMER_GROUP, msg_id)
+                        continue
 
                     try:
                         async with async_session_factory() as db:
@@ -131,7 +141,7 @@ async def main():
                     except Exception as e:
                         logger.error(f"Attempt {retries + 1} failed: {e}")
                         if retries < WORKER_MAX_RETRIES - 1:
-                            await redis.xadd(WORKER_STREAM_NAME, "*", {**data, "retries": str(retries + 1)})
+                            await redis.xadd(WORKER_STREAM_NAME, "*", {**data, "retries": str(retries + 1)} if isinstance(data, dict) else {"payload": json.dumps(payload), "retries": str(retries + 1)})
                         else:
                             logger.error(f"Max retries reached for {msg_id}")
                         await redis.xack(WORKER_STREAM_NAME, WORKER_CONSUMER_GROUP, msg_id)
@@ -141,7 +151,7 @@ async def main():
             break
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)
 
     await close_db()
     await close_redis()
