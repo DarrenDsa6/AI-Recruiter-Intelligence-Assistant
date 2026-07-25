@@ -35,10 +35,6 @@ async def chat_stream(
         return ErrorResponse(error=error)
 
     redis = await get_redis()
-    session_key = f"chat:{user_id}:{resume_id}"
-    rate_error = await check_rate_limit(redis, session_key)
-    if rate_error:
-        return ErrorResponse(error=rate_error)
 
     result = await db.execute(
         select(TailoringReport).where(
@@ -51,6 +47,11 @@ async def chat_stream(
         return ErrorResponse(error="Report not found")
 
     resume_id = request.resume_id or report.resume_id
+
+    session_key = f"chat:{user_id}:{resume_id}"
+    rate_error = await check_rate_limit(redis, session_key)
+    if rate_error:
+        return ErrorResponse(error=rate_error)
 
     stored_data = await vector_store.get_by_resume(db, str(resume_id))
     if not stored_data or not stored_data.get("documents"):
