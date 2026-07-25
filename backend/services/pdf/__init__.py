@@ -110,9 +110,9 @@ def generate_report_pdf(
             if isinstance(s, dict):
                 orig = s.get("original", s.get("keyword", ""))
                 suggested = s.get("suggested_rewrite", s.get("suggestion", ""))
-            pdf.set_font("Helvetica", "", 10)
-            pdf.set_text_color(50, 50, 50)
-            pdf.multi_cell(0, 5, f"  {orig} -> {suggested}")
+                pdf.set_font("Helvetica", "", 10)
+                pdf.set_text_color(50, 50, 50)
+                pdf.multi_cell(0, 5, f"  {orig} -> {suggested}")
             else:
                 pdf.bullet_list([str(s)])
         pdf.ln(2)
