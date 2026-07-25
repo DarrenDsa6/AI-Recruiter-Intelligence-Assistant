@@ -89,3 +89,17 @@ export async function ingestGitHub(resumeId, username, token) {
 export async function healthCheck() {
   return request("/api/health");
 }
+
+export async function requestOTP(email) {
+  return request("/api/auth/request-otp", {
+    method: "POST",
+    body: { email },
+  });
+}
+
+export async function verifyOTP(email, otp) {
+  return request("/api/auth/verify-otp", {
+    method: "POST",
+    body: { email, otp },
+  });
+}

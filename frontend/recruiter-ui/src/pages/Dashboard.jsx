@@ -43,7 +43,7 @@ export default function Dashboard() {
     localStorage.removeItem("auth_token");
     localStorage.removeItem("user_id");
     localStorage.removeItem("user_email");
-    window.location.href = "/";
+    navigate("/auth", { replace: true });
   };
 
   const loadReports = useCallback(async () => {

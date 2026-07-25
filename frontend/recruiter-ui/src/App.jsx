@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Routes, Route, Navigate, Outlet } from "react-router-dom";
+import AuthPage from "./pages/AuthPage";
 import UploadPage from "./pages/UploadPage";
 import Dashboard from "./pages/Dashboard";
 
@@ -7,17 +8,18 @@ const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 function AuthGate() {
   const [ready, setReady] = useState(false);
+  const [redirect, setRedirect] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem("auth_token");
     if (token) {
-      // Check if token is expired by decoding JWT
       try {
         const payload = JSON.parse(atob(token.split(".")[1]));
         if (payload.exp * 1000 < Date.now()) {
           localStorage.removeItem("auth_token");
           localStorage.removeItem("user_id");
           localStorage.removeItem("user_email");
+          setRedirect(true);
         } else {
           setReady(true);
           return;
@@ -26,22 +28,16 @@ function AuthGate() {
         localStorage.removeItem("auth_token");
         localStorage.removeItem("user_id");
         localStorage.removeItem("user_email");
+        setRedirect(true);
       }
+    } else {
+      setRedirect(true);
     }
-
-    fetch(`${API_BASE}/api/auth/anonymous`, { method: "POST" })
-      .then((r) => r.json())
-      .then((data) => {
-        localStorage.setItem("auth_token", data.token);
-        localStorage.setItem("user_id", data.user_id);
-        localStorage.setItem("user_email", data.email);
-        setReady(true);
-      })
-      .catch(() => {
-        // Retry or show error
-        setTimeout(() => window.location.reload(), 2000);
-      });
   }, []);
+
+  if (redirect) {
+    return <Navigate to="/auth" replace />;
+  }
 
   if (!ready) {
     return (
@@ -60,6 +56,7 @@ function AuthGate() {
 export default function App() {
   return (
     <Routes>
+      <Route path="/auth" element={<AuthPage />} />
       <Route element={<AuthGate />}>
         <Route path="/" element={<UploadPage />} />
         <Route path="/dashboard" element={<Dashboard />} />
