@@ -82,11 +82,6 @@ async def process_job(payload: dict, db, redis):
         await db.commit()
         logger.info(f"Job completed: report={report_id}")
 
-        try:
-            await redis.publish(f"report:{report_id}", json.dumps({"status": "completed"}))
-        except Exception as pub_err:
-            logger.warning(f"Failed to publish completion event: {pub_err}")
-
         if payload.get("send_email"):
             try:
                 user_result = await db.execute(select(User.email).where(User.id == payload["user_id"]))
@@ -124,10 +119,6 @@ async def process_job(payload: dict, db, redis):
                 await fresh_db.commit()
         except Exception as update_err:
             logger.error(f"Failed to mark report as failed: {update_err}")
-        try:
-            await redis.publish(f"report:{report_id}", json.dumps({"status": "failed"}))
-        except Exception:
-            pass
         raise
 
 

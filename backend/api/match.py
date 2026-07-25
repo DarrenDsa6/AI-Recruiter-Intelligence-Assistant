@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.dependencies import get_current_user
 from services.database import get_db
-from services.redis import get_redis
+import services.database as db_module
 from services.parsing.classifier import classify_document
 from services.guardrails import validate_jd_text
 from models.report import TailoringReport
@@ -190,20 +190,16 @@ async def stream_report_status(
             yield f"data: {json.dumps({'status': row[1]})}\n\n"
         return StreamingResponse(immediate(), media_type="text/event-stream")
 
-    async def subscribe():
-        redis = await get_redis()
-        pubsub = redis.pubsub()
-        channel = f"report:{report_id}"
-        await pubsub.subscribe(channel)
-        try:
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    data = json.loads(message["data"])
-                    yield f"data: {json.dumps(data)}\n\n"
-                    if data.get("status") in ("completed", "failed"):
-                        break
-        finally:
-            await pubsub.unsubscribe(channel)
-            await pubsub.close()
+    async def poll_status():
+        while True:
+            await asyncio.sleep(2)
+            async with db_module.async_session_factory() as poll_db:
+                result = await poll_db.execute(
+                    select(TailoringReport.status).where(TailoringReport.id == report_id)
+                )
+                status = result.scalar_one_or_none()
+                if status in ("completed", "failed"):
+                    yield f"data: {json.dumps({'status': status})}\n\n"
+                    break
 
-    return StreamingResponse(subscribe(), media_type="text/event-stream")
+    return StreamingResponse(poll_status(), media_type="text/event-stream")
