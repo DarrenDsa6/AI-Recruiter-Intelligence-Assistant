@@ -153,37 +153,37 @@ async def ensure_consumer_group(redis, stream_name):
 
 async def recover_pending(redis, stream_name, semaphore, active_tasks, is_urgent):
     try:
-        pending = await redis.xpending_range(stream_name, CONSUMER_GROUP, min="-", max="+", count=10)
-        if not pending:
+        info = await redis.xpending(stream_name, CONSUMER_GROUP)
+        pending_count = info[0] if isinstance(info, (list, tuple)) else 0
+        if not pending_count:
             return
 
-        for entry in pending:
+        logger.info(f"Found {pending_count} pending entries in {stream_name}")
+
+        claimed = await redis.xclaim(
+            stream_name, CONSUMER_GROUP, CONSUMER_NAME,
+            min_idle_time=0, ids=["0-0"]
+        )
+        if not claimed:
+            return
+
+        for entry in claimed:
             msg_id = entry[0] if isinstance(entry, (list, tuple)) else entry.get("message_id")
-            if not msg_id:
+            raw_fields = entry[1] if isinstance(entry, (list, tuple)) and len(entry) > 1 else entry.get("fields")
+            if not msg_id or not raw_fields:
                 continue
 
-            logger.info(f"Recovering pending entry: msg_id={msg_id}, stream={stream_name}")
-            try:
-                claimed = await redis.xclaim(
-                    stream_name, CONSUMER_GROUP, CONSUMER_NAME,
-                    min_idle_time=0, ids=[msg_id]
-                )
-                if not claimed:
-                    continue
+            logger.info(f"Recovered pending entry: msg_id={msg_id}, stream={stream_name}")
+            data = parse_entry(raw_fields)
+            payload, retries = parse_payload(data)
 
-                for claimed_msg_id, raw_fields in (claimed if isinstance(claimed, list) else [claimed]):
-                    data = parse_entry(raw_fields)
-                    payload, retries = parse_payload(data)
-
-                    task = asyncio.create_task(run_with_ack(
-                        payload, is_urgent, retries, redis, stream_name, claimed_msg_id, semaphore
-                    ))
-                    active_tasks.add(task)
-                    task.add_done_callback(active_tasks.discard)
-            except Exception as claim_err:
-                logger.warning(f"Failed to claim pending entry {msg_id}: {claim_err}")
+            task = asyncio.create_task(run_with_ack(
+                payload, is_urgent, retries, redis, stream_name, msg_id, semaphore
+            ))
+            active_tasks.add(task)
+            task.add_done_callback(active_tasks.discard)
     except Exception as e:
-        logger.warning(f"Failed to check pending entries for {stream_name}: {e}")
+        logger.warning(f"Pending recovery skipped for {stream_name}: {e}")
 
 
 async def run_with_ack(payload, is_urgent, retries, redis, stream_name, msg_id, semaphore):
