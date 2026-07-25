@@ -19,7 +19,8 @@ services:
     build:
       context: ./backend
     container_name: ai-recruiter-worker
-    command: python worker.py
+    command: >
+      sh -c "alembic upgrade head && python worker.py"
     env_file:
       - ./backend/.env
     environment:
