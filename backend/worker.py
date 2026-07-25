@@ -131,7 +131,7 @@ async def main():
                     except Exception as e:
                         logger.error(f"Attempt {retries + 1} failed: {e}")
                         if retries < WORKER_MAX_RETRIES - 1:
-                            await redis.xadd(WORKER_STREAM_NAME, data={**data, "retries": str(retries + 1)})
+                            await redis.xadd(WORKER_STREAM_NAME, "*", data={**data, "retries": str(retries + 1)})
                         else:
                             logger.error(f"Max retries reached for {msg_id}")
                         await redis.xack(WORKER_STREAM_NAME, WORKER_CONSUMER_GROUP, msg_id)
