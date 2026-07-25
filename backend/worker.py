@@ -15,7 +15,9 @@ from services.redis import get_redis, close_redis
 from services.matching import matcher
 from services.llm import llm_client
 from services.storage import vector_store
+from services.integrations.brevo import brevo_email
 from models.report import TailoringReport
+from models.user import User
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [worker] %(name)s: %(message)s")
 logger = logging.getLogger("worker")
@@ -61,6 +63,21 @@ async def process_job(payload: dict, db, redis):
         )
         await db.commit()
         logger.info(f"Job completed: report={report_id}")
+
+        try:
+            user_result = await db.execute(select(User.email).where(User.id == payload["user_id"]))
+            user_email = user_result.scalar_one_or_none()
+            if user_email:
+                from config.settings import settings
+                dashboard_url = f"{settings.cors_origin_list[0] if settings.cors_origin_list else 'http://localhost:5173'}/dashboard/{report_id}"
+                await brevo_email.send_report_notification(
+                    to_email=user_email,
+                    score=match_result.get("final_score", 0),
+                    report_id=report_id,
+                    dashboard_url=dashboard_url,
+                )
+        except Exception as email_err:
+            logger.error(f"Failed to send report email: {email_err}")
 
     except Exception as e:
         logger.error(f"Job failed: report={report_id}, error={e}")

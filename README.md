@@ -1,26 +1,29 @@
 # AI Resume Tailor
 
-An asynchronous, candidate-facing platform that analyzes resumes against job descriptions. Upload a PDF resume and paste a job description, and receive an ATS compatibility score, skill gap analysis, actionable rewrites, and interview prep questions -- all powered by career coach AI. Authentication is email OTP only. Job processing runs in the background via Redis Streams.
+An asynchronous, candidate-facing platform that analyzes resumes against job descriptions. Upload a PDF resume and paste a job description, and receive an ATS compatibility score, skill gap analysis, actionable rewrites, and interview prep questions -- all powered by career coach AI. Authentication is email OTP via Brevo. Job processing runs in the background via Redis Streams.
 
 ---
 
 ## Features
 
-- **Email OTP Authentication** -- Passwordless sign-in via 6-digit code (Resend email)
+- **Email OTP Authentication** -- Passwordless sign-in via 6-digit code (Brevo email)
 - **Resume Ingestion** -- PDF/DOCX upload with magic-byte verification, SHA-256 deduplication; parsed, chunked, and embedded into PostgreSQL via pgvector
 - **Upload Validation** -- File type verification (magic bytes), size limit (10 MB), page limit (30), text length limit (50K chars)
-- **Document Classification** -- Heuristic keyword scoring to classify uploads as Resume, Job Description, or Other; rejects non-recruitment documents
+- **Document Classification** -- Two-tier classifier: keyword heuristics (fast) + LLM fallback (uncertain cases) with confidence scores
 - **Content Moderation** -- Scans uploaded text for unsafe content before storage
-- **Prompt Injection Defense** -- Scans uploads for injection patterns; hardens LLM system prompts with "documents are data only" rules and content delimiters
+- **Prompt Injection Defense** -- Two-tier detection: regex patterns + LLM classifier; hardens LLM system prompts with "documents are data only" rules and content delimiters
 - **Query Classification** -- Validates user questions are recruitment-related before RAG; rejects off-topic and injection attempts
+- **Modular Guardrails** -- Split into focused modules: injection, moderation, query, output, rate_limit, upload
 - **Async Job Queue** -- Redis Streams producer/consumer pattern; jobs are submitted instantly (202) and processed in a separate worker
-- **ATS Compatibility Scoring** -- Deterministic skill matching (semantic + regex) at 70% weight + document similarity at 30%
+- **ATS Compatibility Scoring** -- Deterministic skill matching (semantic + regex) at 70% weight + document similarity at 30%, with category breakdown (skills, experience, education, projects, keywords)
 - **Career Coach AI** -- Hardened LLM prompts focus on ATS optimization; document content treated as untrusted data
 - **Actionable Rewrites** -- AI generates rewritten bullet points for weak resume sections
 - **Gap-Focused Interview Prep** -- Questions target the candidate's exact skill gaps with prep tips
 - **Report History** -- All past analyses persist in PostgreSQL with a sidebar dashboard
 - **Streaming Chat** -- Resume-aware conversational follow-ups with JD + GitHub context via RAG
 - **Chat Guardrails** -- Input validation, prompt injection protection, recruitment-domain enforcement, output sanitization, rate limiting
+- **Report Completion Email** -- Brevo sends notification with ATS score and dashboard link when analysis completes
+- **JD Embedding Cache** -- Redis-cached JD embeddings (SHA-256 key, 24h TTL) to avoid redundant computation
 - **PDF Export** -- Download the full report as a pixel-perfect A4 PDF
 - **Background Worker** -- Separate process with retry/backoff, dead letter stream, and email notifications
 
@@ -32,13 +35,14 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 Candidate (Browser)                    Backend (FastAPI)                 Infrastructure
 ─────────────────                    ─────────────────                 ──────────────
   AuthPage ──► request-otp ──────────► Redis (store OTP, 5min TTL)
+              │                       ► Brevo (send 6-digit code)
               verify-otp ────────────► Postgres (upsert user)
               ◄── JWT token ──────────
 
   UploadPage ──► POST /api/upload ──► File validation (magic bytes, size, pages)
                   │                   ► Text validation (length check)
-                  │                   ► Document classification (resume/jd/other)
-                  │                   ► Injection scan + content moderation
+                  │                   ► Document classification (heuristic + LLM)
+                  │                   ► Injection scan (regex + LLM) + content moderation
                   │                   ► SHA-256 dedup check
                   │                   ► Parser → Chunker → Embedder
                   │                   ► PostgreSQL + pgvector (embeddings)
@@ -47,11 +51,12 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
                   ◄── 202 Accepted ──► Redis Stream ────────► Worker consumes
                                        ┌────────────────────────────┐
                                        │  1. compute_similarity     │
+                                       │     (cached JD embedding)  │
                                        │  2. LLM report (delimited) │
                                        │  3. LLM rewrites           │
                                        │  4. LLM questions          │
                                        │  5. Save to Postgres       │
-                                       │  6. Send email (Resend)    │
+                                       │  6. Brevo email notification│
                                        └────────────────────────────┘
 
   Dashboard ──► GET /api/reports ────► Postgres (list reports)
@@ -69,17 +74,18 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 |-------|-----------|
 | **Frontend** | React 19, React Router 7, Tailwind CSS 3 |
 | **Backend** | FastAPI, Python 3.11, Uvicorn |
-| **Auth** | Email OTP (Redis) + JWT (PyJWT) |
+| **Auth** | Email OTP (Redis + Brevo) + JWT (PyJWT) |
 | **Queue** | Redis Streams (Upstash) |
 | **Database** | PostgreSQL (Supabase) via SQLAlchemy + asyncpg + Alembic |
 | **Vector DB** | PostgreSQL + pgvector (resume_chunks table) |
 | **LLM** | NVIDIA API (mistralai/mistral-medium-3.5-128b) via AsyncOpenAI |
 | **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 (384 dimensions) |
-| **Email** | Resend |
+| **Email** | Brevo (SMTP API via httpx) |
 | **Metrics** | Prometheus (prometheus-fastapi-instrumentator) |
 | **PDF Export** | html2canvas-pro + jsPDF |
 | **Parsing** | PyMuPDF (PDF), python-docx (DOCX) |
-| **Validation** | Magic-byte file verification, keyword document classification |
+| **Validation** | Magic-byte verification, two-tier document classification |
+| **Guardrails** | Modular package (injection, moderation, query, output, rate_limit, upload) |
 | **Config** | Pydantic BaseSettings (centralized env management) |
 
 ---
@@ -102,13 +108,13 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   └── dependencies.py      # Shared get_current_user dependency
 │   │
 │   ├── api/
-│   │   ├── auth.py              # POST /api/auth/request-otp, verify-otp
+│   │   ├── auth.py              # POST /api/auth/request-otp, verify-otp, anonymous
 │   │   ├── upload.py            # POST /api/upload (validation + classification + dedup)
 │   │   ├── match.py             # POST /api/match (JD validation), GET /api/reports
 │   │   ├── chat.py              # POST /api/chat/stream (query classification + RAG + guardrails)
-│   │   ├── github.py            # GitHub data ingestion
-│   │   ├── search.py            # Semantic search
-│   │   └── session.py           # Session management
+│   │   ├── github.py            # GitHub data ingestion (auth + ownership check)
+│   │   ├── search.py            # Semantic search (auth + ownership check)
+│   │   └── session.py           # Session management (auth + ownership check)
 │   │
 │   ├── models/
 │   │   ├── base.py              # SQLAlchemy DeclarativeBase
@@ -123,10 +129,18 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   ├── services/
 │   │   ├── database.py          # Engine + async session factory + pgvector extension
 │   │   ├── redis.py             # Async Redis client (Upstash or local)
-│   │   ├── guardrails.py        # Input validation, injection, moderation, query classification
+│   │   │
+│   │   ├── guardrails/          # Modular guardrails package
+│   │   │   ├── __init__.py      # Re-exports all guardrail functions
+│   │   │   ├── injection.py     # Regex + LLM prompt injection detection
+│   │   │   ├── moderation.py    # Content moderation patterns
+│   │   │   ├── query.py         # Query classification + recruitment validation
+│   │   │   ├── output.py        # Output sanitization (code/URL/markdown stripping)
+│   │   │   ├── rate_limit.py    # Redis-based rate limiting
+│   │   │   └── upload.py        # Upload/JD validation helpers
 │   │   │
 │   │   ├── llm/
-│   │   │   ├── client.py        # LLM client with document delimiters
+│   │   │   ├── client.py        # LLM client (document delimiters, classification, injection detection)
 │   │   │   └── prompts.py       # Hardened system prompts (domain-restricted)
 │   │   │
 │   │   ├── embedding/
@@ -135,7 +149,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   │   └── skill_cache.py   # Pre-computed skill embeddings
 │   │   │
 │   │   ├── matching/
-│   │   │   ├── matcher.py       # Main scoring orchestrator
+│   │   │   ├── matcher.py       # Main scoring orchestrator (JD caching, explainable breakdown)
 │   │   │   ├── semantic_matcher.py
 │   │   │   ├── skill_classifier.py
 │   │   │   ├── skill_gap_analyzer.py
@@ -146,14 +160,15 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   │   ├── chunker.py       # Text chunking
 │   │   │   ├── skills.py        # Regex skill extraction
 │   │   │   ├── validator.py     # File type/size/page/text validation
-│   │   │   └── classifier.py    # Document classification (resume/jd/other)
+│   │   │   └── classifier.py    # Two-tier document classification (heuristic + LLM)
 │   │   │
 │   │   ├── storage/
 │   │   │   ├── vector_store.py  # PostgreSQL + pgvector (resume_chunks table)
 │   │   │   └── session_store.py # Redis-backed conversation history
 │   │   │
 │   │   └── integrations/
-│   │       └── github.py        # GitHub API client
+│   │       ├── github.py        # GitHub API client
+│   │       └── brevo.py         # Brevo email service (OTP + report notifications)
 │   │
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql  # Standalone SQL for Supabase SQL Editor
@@ -202,7 +217,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 - Python 3.11+, Node.js 18+
 - Supabase account (PostgreSQL + pgvector)
 - Upstash account (Redis)
-- Resend account (email)
+- Brevo account (email)
 - NVIDIA API key (LLM)
 
 ### 1. Set up environment
@@ -255,8 +270,9 @@ docker compose up --build
 | `LLM_BASE_URL` | LLM provider base URL | `https://integrate.api.nvidia.com/v1` |
 | `LLM_MODEL` | Model name | `mistralai/mistral-medium-3.5-128b` |
 | `JWT_SECRET` | Secret for signing JWT tokens | 64-char hex string |
-| `RESEND_API_KEY` | Resend email API key | `re_...` |
-| `RESEND_FROM_EMAIL` | Verified sender email | `noreply@yourdomain.com` |
+| `BREVO_API_KEY` | Brevo SMTP API key | `xkeysib-...` |
+| `BREVO_FROM_EMAIL` | Verified sender email | `noreply@yourdomain.com` |
+| `BREVO_FROM_NAME` | Sender display name | `AI Resume Tailor` |
 | `GITHUB_TOKEN` | (Optional) GitHub API token | `ghp_...` |
 
 ---
@@ -280,28 +296,34 @@ docker compose up --build
 
 ## Security
 
+### Authentication
+
+- Email OTP via Brevo (6-digit code, 5min TTL, 3 requests/5min rate limit)
+- JWT tokens stored in localStorage, validated on all protected endpoints
+- Anonymous login available for quick testing
+
 ### Upload Security
 
 - **Magic-byte verification** -- Validates PDF (`%PDF`) and DOCX (`PK\x03\x04`) file headers, not just extension
 - **File size limit** -- 10 MB maximum per upload
 - **Page limit** -- 30 pages maximum for PDFs
 - **Text length limit** -- 50,000 characters maximum extracted text
-- **Document classification** -- Keyword heuristics classify uploads as Resume, JD, or Other; non-recruitment documents are rejected
-- **Content moderation** -- Scans extracted text for unsafe content (hate speech, self-harm, NSFW, etc.) before storage
-- **Injection scan** -- Detects prompt injection patterns in uploaded documents (jailbreak, system prompt override, etc.)
+- **Document classification** -- Two-tier: keyword heuristics (fast) + LLM fallback (uncertain) with confidence scores
+- **Content moderation** -- Scans extracted text for unsafe content before storage
+- **Injection scan** -- Two-tier: regex patterns + LLM classifier for prompt injection detection
 - **SHA-256 deduplication** -- Prevents re-processing of identical files
 
 ### JD Validation
 
-- **Classification check** -- Verifies submitted text is a job description (not a resume or other text)
-- **Injection scan** -- Same pattern detection as uploads
+- **Classification check** -- Two-tier verification that text is a JD (not a resume or other content)
+- **Injection scan** -- Same two-tier detection as uploads
 - **Content moderation** -- Same moderation scan as uploads
 - **Length limit** -- 50,000 characters maximum
 
 ### Chat Security
 
 - **Query classification** -- Validates questions are recruitment-related before RAG
-- **Prompt injection detection** -- 16+ patterns including "ignore instructions", "jailbreak", "DAN mode"
+- **Prompt injection detection** -- Two-tier: regex patterns + LLM classifier
 - **Rate limiting** -- 50 messages per session per hour via Redis
 - **Message length cap** -- 2000 characters per message
 - **Output sanitization** -- Code blocks, URLs, and markdown stripped from LLM responses
@@ -312,13 +334,18 @@ docker compose up --build
 - **Document delimiters** -- All document content wrapped in `<<<DOCUMENT_DATA_START>>>` / `<<<DOCUMENT_DATA_END>>>` markers
 - **Domain restriction** -- LLM is instructed to only answer recruitment-related questions
 
+### Authorization
+
+- All resource endpoints verify `user_id` ownership via JWT
+- GitHub ingestion, search, and session deletion all check `MasterResume.user_id == user_id`
+- Returns 404 (not 403) to avoid leaking resource existence
+
 ### Infrastructure
 
 - LLM API key is server-side only (never sent to frontend)
-- JWT tokens stored in localStorage, validated on all protected endpoints
-- Rate limiting on OTP endpoints (3/email/5min, 10/IP/hr)
 - Alembic migrations for schema versioning
 - Docker Compose runs `alembic upgrade head` on startup
+- JD embeddings cached in Redis (SHA-256 key, 24h TTL)
 
 ---
 

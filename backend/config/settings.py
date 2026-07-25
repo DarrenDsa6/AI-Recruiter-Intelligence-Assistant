@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     resend_api_key: str = Field(default="", alias="RESEND_API_KEY")
     resend_from_email: str = Field(default="", alias="RESEND_FROM_EMAIL")
 
+    brevo_api_key: str = Field(default="", alias="BREVO_API_KEY")
+    brevo_from_email: str = Field(default="", alias="BREVO_FROM_EMAIL")
+    brevo_from_name: str = Field(default="AI Resume Tailor", alias="BREVO_FROM_NAME")
+
     github_token: str = Field(default="", alias="GITHUB_TOKEN")
 
     cors_origins: str = Field(default="", alias="CORS_ORIGINS")
