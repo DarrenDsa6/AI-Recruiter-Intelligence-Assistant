@@ -10,7 +10,7 @@ async def check_rate_limit(redis, session_key: str) -> str | None:
     pipe = redis.pipeline()
     pipe.incr(rate_key)
     pipe.expire(rate_key, RATE_LIMIT_WINDOW_SECONDS)
-    results = await pipe.execute()
+    results = await pipe.exec()
     count = results[0]
     if count > RATE_LIMIT_MAX_MESSAGES:
         return f"Rate limit exceeded. Max {RATE_LIMIT_MAX_MESSAGES} messages per hour."

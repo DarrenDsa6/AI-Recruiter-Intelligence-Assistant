@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.dependencies import get_current_user
@@ -16,8 +16,11 @@ from services.parsing.classifier import classify_document
 from services.guardrails import validate_jd_text
 from models.report import TailoringReport
 from models.resume import MasterResume
+from models.chunk import ResumeChunk
 from schemas.match import MatchRequest, MatchAccepted
 from config.constants import RATE_LIMIT_MATCHES_MAX, RATE_LIMIT_MATCHES_WINDOW_SECONDS, WORKER_STREAM_URGENT, WORKER_STREAM_EMAIL
+
+MAX_REPORTS_PER_USER = 3
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,7 +41,7 @@ async def match_job_description(
     pipe = redis.pipeline()
     pipe.incr(rate_key)
     pipe.expire(rate_key, RATE_LIMIT_MATCHES_WINDOW_SECONDS)
-    results = await pipe.execute()
+    results = await pipe.exec()
     count = results[0]
     if count > RATE_LIMIT_MATCHES_MAX:
         raise HTTPException(
@@ -89,7 +92,37 @@ async def match_job_description(
     logger.info(f"Stream entry id: {entry_id} (stream={job_stream})")
 
     logger.info(f"Job queued: report={report.id} resume={body.resume_id}")
+
+    await _purge_old_reports(db, user_id)
+
     return MatchAccepted(report_id=report.id)
+
+
+async def _purge_old_reports(db: AsyncSession, user_id: UUID):
+    try:
+        result = await db.execute(
+            select(TailoringReport.id)
+            .where(TailoringReport.user_id == user_id)
+            .order_by(TailoringReport.created_at.desc())
+            .offset(MAX_REPORTS_PER_USER)
+        )
+        old_ids = [row[0] for row in result.all()]
+        if not old_ids:
+            return
+
+        chunk_del = await db.execute(
+            delete(ResumeChunk).where(
+                ResumeChunk.resume_id.in_(
+                    select(TailoringReport.resume_id).where(TailoringReport.id.in_(old_ids))
+                )
+            )
+        )
+        await db.execute(delete(TailoringReport).where(TailoringReport.id.in_(old_ids)))
+        await db.commit()
+        logger.info(f"Purged {len(old_ids)} old reports for user {user_id} ({chunk_del.rowcount} chunks)")
+    except Exception as e:
+        logger.error(f"Failed to purge old reports: {e}")
+        await db.rollback()
 
 
 @router.get("/reports")
@@ -218,3 +251,26 @@ async def stream_report_status(
         yield f"data: {json.dumps({'status': 'timeout'})}\n\n"
 
     return StreamingResponse(poll_status(), media_type="text/event-stream")
+
+
+@router.delete("/reports/{report_id}")
+async def delete_report(
+    report_id: UUID,
+    user_id: UUID = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(TailoringReport).where(
+            TailoringReport.id == report_id,
+            TailoringReport.user_id == user_id,
+        )
+    )
+    report = result.scalar_one_or_none()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    resume_id = report.resume_id
+    await db.execute(delete(ResumeChunk).where(ResumeChunk.resume_id == resume_id))
+    await db.execute(delete(TailoringReport).where(TailoringReport.id == report_id))
+    await db.commit()
+    return {"message": "Report deleted"}

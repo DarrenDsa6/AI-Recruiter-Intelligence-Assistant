@@ -44,7 +44,7 @@ async def request_otp(
     pipe = redis.pipeline()
     pipe.incr(rate_key)
     pipe.expire(rate_key, RATE_LIMIT_WINDOW_SECONDS)
-    results = await pipe.execute()
+    results = await pipe.exec()
     count = results[0]
     if count > OTP_RATE_LIMIT_MAX:
         raise HTTPException(
@@ -123,7 +123,7 @@ async def anonymous_login(response: Response, db: AsyncSession = Depends(get_db)
     pipe = redis.pipeline()
     pipe.incr(rate_key)
     pipe.expire(rate_key, ANON_RATE_LIMIT_WINDOW)
-    results = await pipe.execute()
+    results = await pipe.exec()
     count = results[0]
     if count > ANON_RATE_LIMIT_MAX:
         raise HTTPException(status_code=429, detail="Too many anonymous sessions. Please sign in.")

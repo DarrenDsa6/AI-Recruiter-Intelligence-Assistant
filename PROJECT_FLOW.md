@@ -719,7 +719,7 @@ The worker runs cleanup every 100 stream polls (~17 minutes):
 | Page | Route | Purpose |
 |------|-------|---------|
 | AuthPage | /auth | Email OTP sign-in |
-| UploadPage | / | Upload resume + paste JD -> submit -> queued state |
+| UploadPage | / | Upload resume + paste JD -> submit -> queued state; shows recent reports with delete |
 | Dashboard | /dashboard/:reportId | View report results, chat with AI |
 
 ### Why React Router 7

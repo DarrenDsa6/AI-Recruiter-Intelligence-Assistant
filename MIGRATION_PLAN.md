@@ -241,6 +241,13 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - **AuthPage unhandled rejection**: `.catch()` added to OTP resend promise
 - **ChatSection duplicate error**: Removed redundant `setCurrentAI` + `setMessages` on error (showed two error messages)
 
+## Phase 22: Report Management -- DONE
+
+- **DELETE /api/reports/:id**: Removes report + chunks with ownership check
+- **Auto-purge**: After each new match, keeps only 3 most recent reports per user (older ones + their chunks deleted)
+- **UploadPage recent reports**: Shows up to 3 recent reports with status, date, and delete button
+- **"View all reports" button**: Navigates to dashboard from upload page
+
 ---
 
 ## Security Notes
@@ -368,6 +375,10 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - [x] AbortController cleanup on Dashboard + ChatSection unmount
 - [x] AuthPage OTP resend unhandled rejection fixed
 - [x] ChatSection duplicate error message removed
+- [x] DELETE /api/reports/:id with chunk cleanup
+- [x] Auto-purge: max 3 reports per user (older deleted on new match)
+- [x] UploadPage shows recent reports with delete
+- [x] Double /api/api/ prefix fix (REACT_APP_API_URL empty in Docker)
 
 ---
 
@@ -438,6 +449,17 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- AbortController ref + unmount cleanup
 - `frontend/recruiter-ui/src/pages/AuthPage.jsx` -- .catch() on OTP resend
 - `frontend/recruiter-ui/src/components/ChatSection.jsx` -- AbortController + duplicate error removed
+
+### Modified Files (Phase 22: Report Management)
+- `backend/api/match.py` -- Added DELETE /api/reports/:id, auto-purge old reports (max 3 per user)
+- `frontend/recruiter-ui/src/services/api.js` -- Added deleteReport()
+- `frontend/recruiter-ui/src/pages/UploadPage.jsx` -- Recent reports list with delete, "View all" button
+- `frontend/recruiter-ui/src/services/api.js` -- Fixed || to ?? for REACT_APP_API_URL
+- `frontend/recruiter-ui/src/hooks/useBackendStatus.js` -- Fixed || to ?? for REACT_APP_API_URL
+- `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- Fixed || to ?? for REACT_APP_API_URL
+- `frontend/recruiter-ui/src/components/ChatSection.jsx` -- Fixed || to ?? for REACT_APP_API_URL
+- `frontend/recruiter-ui/Dockerfile` -- REACT_APP_API_URL default changed to empty
+- `docker-compose.yml` -- REACT_APP_API_URL set to empty (was /api)
 
 ### Deleted Files (Phase 15)
 - `backend/services/guardrails.py` (replaced by guardrails/ package)

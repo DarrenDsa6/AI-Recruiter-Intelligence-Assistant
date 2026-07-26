@@ -19,7 +19,7 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 - **Career Coach AI** -- Hardened LLM prompts focus on ATS optimization; document content treated as untrusted data
 - **Actionable Rewrites** -- AI generates rewritten bullet points for weak resume sections
 - **Gap-Focused Interview Prep** -- Questions target the candidate's exact skill gaps with prep tips
-- **Report History** -- All past analyses persist in PostgreSQL with a sidebar dashboard; N+1 queries replaced with bulk fetch
+- **Report History** -- All past analyses persist in PostgreSQL with a sidebar dashboard; N+1 queries replaced with bulk fetch; upload page shows recent reports with delete option; max 3 reports per user (older auto-purged)
 - **Streaming Chat** -- Resume-aware conversational follow-ups with JD + GitHub context via RAG; AI messages rendered with ReactMarkdown; errors displayed inline in chat UI
 - **Chat Guardrails** -- Input validation (2000-char limit), prompt injection protection, recruitment-domain enforcement, output sanitization, rate limiting
 - **Report Completion Email** -- Brevo sends notification with ATS score, dashboard link, and PDF attachment when analysis completes
@@ -115,7 +115,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   ├── api/
 │   │   ├── auth.py              # POST /api/auth/request-otp, verify-otp, anonymous (constant-time OTP, normalized email)
 │   │   ├── upload.py            # POST /api/upload (validation + classification + dedup)
-│   │   ├── match.py             # POST /api/match (JD validation), GET /api/reports (bulk fetch)
+│   │   ├── match.py             # POST /api/match (JD validation), GET /api/reports (bulk fetch), DELETE /api/reports/:id
 │   │   ├── chat.py              # POST /api/chat/stream (query classification + RAG + guardrails, message length cap)
 │   │   ├── github.py            # GitHub data ingestion (X-GitHub-Token header, username regex validation)
 │   │   ├── search.py            # Semantic search (auth + ownership check)
@@ -200,7 +200,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   ├── src/
 │   │   ├── pages/
 │   │   │   ├── AuthPage.jsx     # Email OTP sign-in
-│   │   │   ├── UploadPage.jsx   # 3-step wizard (input -> processing -> queued)
+│   │   │   ├── UploadPage.jsx   # 3-step wizard (input -> processing -> queued), recent reports with delete
 │   │   │   └── Dashboard.jsx    # Report history, results, chat (immutable state updates)
 │   │   ├── components/
 │   │   │   ├── ScoreGauge.jsx, SkillsSection.jsx, ReportSection.jsx

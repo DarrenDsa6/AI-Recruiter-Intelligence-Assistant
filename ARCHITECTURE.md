@@ -417,6 +417,7 @@ Category Breakdown:
 | `GET /api/search/{id}` | `get_current_user` + `MasterResume.user_id == user_id` |
 | `DELETE /api/session/{id}` | `get_current_user` + `MasterResume.user_id == user_id` |
 | `GET /api/reports` | `get_current_user` (bulk fetch via IN clause, filters by user_id) |
+| `DELETE /api/reports/{id}` | `get_current_user` + `TailoringReport.user_id == user_id` |
 | `GET /api/reports/{id}` | `get_current_user` + `TailoringReport.user_id == user_id` |
 | `GET /api/reports/{id}/stream` | `get_current_user` + `TailoringReport.user_id == user_id` (user_id in poll query) |
 
@@ -502,6 +503,7 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 - SHA-256 resume deduplication
 - JD embedding caching (Redis, SHA-256 key, 24h TTL)
 - TTL auto-cleanup (7d chunks, 14d reports, orphaned resumes)
+- Per-user report limit (max 3, older auto-purged on new match)
 - Skill derivation at query time (5% storage savings)
 - PII scrubbing before LLM calls (emails, phones, addresses)
 - SSE streaming for job status (instant push, no polling, 5-min timeout)

@@ -28,7 +28,7 @@ class SessionStore:
 
         pipe = r.pipeline()
         pipe.get(key)
-        results = await pipe.execute()
+        results = await pipe.exec()
         raw = results[0]
 
         if not raw:

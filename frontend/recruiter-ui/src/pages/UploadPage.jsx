@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { uploadResumeAndJD, startMatch, ingestGitHub, checkAuth } from "../services/api";
+import { uploadResumeAndJD, startMatch, ingestGitHub, checkAuth, fetchReports, deleteReport } from "../services/api";
 import useBackendStatus from "../hooks/useBackendStatus";
 
 const STEPS = { INPUT: 0, PROCESSING: 1 };
@@ -16,12 +16,17 @@ export default function UploadPage() {
   const [dragOver, setDragOver] = useState(false);
   const [sendEmail, setSendEmail] = useState(false);
   const [userEmail, setUserEmail] = useState("");
+  const [recentReports, setRecentReports] = useState([]);
+  const [deletingId, setDeletingId] = useState(null);
   const navigate = useNavigate();
   const { connected } = useBackendStatus();
   const fileInputRef = useRef(null);
 
   useEffect(() => {
     checkAuth().then((data) => setUserEmail(data.email)).catch(() => {});
+    fetchReports()
+      .then((data) => setRecentReports(Array.isArray(data) ? data : data.reports || []))
+      .catch(() => {});
   }, []);
 
   const handleLogout = async () => {
@@ -32,6 +37,16 @@ export default function UploadPage() {
       });
     } catch {}
     navigate("/auth", { replace: true });
+  };
+
+  const handleDeleteReport = async (reportId) => {
+    if (deletingId) return;
+    setDeletingId(reportId);
+    try {
+      await deleteReport(reportId);
+      setRecentReports((prev) => prev.filter((r) => r.id !== reportId));
+    } catch {}
+    setDeletingId(null);
   };
 
   const handleDrop = useCallback((e) => {
@@ -100,6 +115,51 @@ export default function UploadPage() {
         <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
           {step === STEPS.INPUT && (
             <div className="space-y-5">
+              {recentReports.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-medium text-gray-400">Recent Reports</h3>
+                    <button
+                      onClick={() => navigate("/dashboard")}
+                      className="text-[10px] text-blue-400 hover:text-blue-300 transition"
+                    >
+                      View all
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {recentReports.slice(0, 3).map((r) => (
+                      <div key={r.id} className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-white/[0.03] border border-white/5 hover:bg-white/[0.05] transition group">
+                        <button
+                          onClick={() => navigate(`/dashboard/${r.id}`)}
+                          className="flex-1 text-left min-w-0"
+                        >
+                          <p className="text-xs text-gray-300 truncate font-medium">{r.filename || r.jd_text?.slice(0, 50) || "Untitled"}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                              r.status === "completed" ? "bg-green-900/40 text-green-400" :
+                              r.status === "failed" ? "bg-red-900/40 text-red-400" :
+                              "bg-blue-900/40 text-blue-400"
+                            }`}>{r.status}</span>
+                            {r.created_at && (
+                              <span className="text-[10px] text-gray-600">{new Date(r.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+                            )}
+                          </div>
+                        </button>
+                        <button
+                          onClick={() => handleDeleteReport(r.id)}
+                          disabled={deletingId === r.id}
+                          className="opacity-0 group-hover:opacity-100 ml-2 p-1.5 rounded-lg hover:bg-red-500/10 transition text-gray-600 hover:text-red-400 disabled:opacity-30"
+                          title="Delete report"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="text-xs font-medium text-gray-400 mb-2 block">Resume (PDF or DOCX)</label>
                 <div
@@ -228,6 +288,15 @@ export default function UploadPage() {
               >
                 {sendEmail ? "Analyze & Email Report" : "Analyze Resume"}
               </button>
+
+              {recentReports.length > 0 && (
+                <button
+                  onClick={() => navigate("/dashboard")}
+                  className="w-full py-2.5 rounded-xl text-xs font-medium text-gray-400 border border-white/10 hover:bg-white/5 hover:text-gray-300 transition-all"
+                >
+                  View all reports
+                </button>
+              )}
             </div>
           )}
 
