@@ -42,7 +42,7 @@ services:
     build:
       context: ./frontend/recruiter-ui
       args:
-        - REACT_APP_API_URL=/api
+        - REACT_APP_API_URL=
     container_name: ai-recruiter-frontend
     ports:
       - "3000:80"
