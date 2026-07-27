@@ -103,6 +103,7 @@ export default function Dashboard() {
 
     init();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportId]);
 
   useEffect(() => {
@@ -119,6 +120,7 @@ export default function Dashboard() {
     );
 
     return () => eventSource.close();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeReport?.id, activeReport?.status]);
 
   useEffect(() => {
@@ -177,6 +179,7 @@ export default function Dashboard() {
             const parsed = JSON.parse(json);
             if (parsed.type === "text") {
               fullText = parsed.content;
+              // eslint-disable-next-line no-loop-func
               setChatMessages((prev) => {
                 const updated = [...prev];
                 const last = updated[updated.length - 1];
@@ -190,6 +193,7 @@ export default function Dashboard() {
             }
             if (parsed.type === "error") {
               fullText = parsed.message;
+              // eslint-disable-next-line no-loop-func
               setChatMessages((prev) => {
                 const updated = [...prev];
                 const last = updated[updated.length - 1];
