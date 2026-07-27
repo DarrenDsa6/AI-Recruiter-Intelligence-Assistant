@@ -67,7 +67,7 @@ async def _verify_metrics_key(
     key: str = Security(APIKeyHeader(name="X-API-Key", auto_error=False)),
 ):
     if not settings.metrics_api_key:
-        raise HTTPException(status_code=503, detail="Metrics not configured")
+        return
     if key != settings.metrics_api_key:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
