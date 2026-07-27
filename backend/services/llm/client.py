@@ -28,6 +28,9 @@ class LLMClient:
         self.model = settings.llm_model
 
     async def generate_candidate_report(self, resume, jd, match_result, github_context):
+        resume = resume[:6000]
+        jd = jd[:4000]
+        github_context = str(github_context)[:2000] if github_context else ""
         logger.info(f"[LLM] Starting generate_candidate_report | model={self.model} | resume_len={len(resume)} | jd_len={len(jd)}")
         prompt = f"""Analyze this candidate's resume against the job description.
 
@@ -57,6 +60,9 @@ Return ONLY JSON:
         return result
 
     async def generate_interview_questions(self, resume, jd, missing_skills, github_context):
+        resume = resume[:6000]
+        jd = jd[:4000]
+        github_context = str(github_context)[:2000] if github_context else ""
         logger.info(f"[LLM] Starting generate_interview_questions | model={self.model} | missing_skills_count={len(missing_skills) if isinstance(missing_skills, list) else '?'}")
         prompt = f"""Given this candidate's resume and the job description,
 generate interview questions that target the candidate's EXACT skill gaps.
@@ -92,8 +98,8 @@ Return ONLY JSON:
 
         logger.info(f"[LLM] Starting generate_actionable_rewrites | model={self.model} | chunks={len(low_scoring_chunks)}")
         chunks_text = "\n\n".join(
-            f"Chunk {c['chunk_index']} (score: {c['score']}):\n{c['text']}"
-            for c in low_scoring_chunks
+            f"Chunk {c['chunk_index']} (score: {c['score']}):\n{c['text'][:500]}"
+            for c in low_scoring_chunks[:5]
         )
 
         prompt = f"""These resume sections scored lowest
