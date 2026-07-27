@@ -16,6 +16,7 @@ from services.parsing.classifier import classify_document
 from services.guardrails import validate_jd_text
 from models.report import TailoringReport
 from models.resume import MasterResume
+from models.user import User
 from models.chunk import ResumeChunk
 from schemas.match import MatchRequest, MatchAccepted
 from config.constants import RATE_LIMIT_MATCHES_MAX, RATE_LIMIT_MATCHES_WINDOW_SECONDS, WORKER_STREAM_URGENT, WORKER_STREAM_EMAIL
