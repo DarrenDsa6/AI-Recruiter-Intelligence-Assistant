@@ -274,3 +274,53 @@ async def delete_report(
     await db.execute(delete(TailoringReport).where(TailoringReport.id == report_id))
     await db.commit()
     return {"message": "Report deleted"}
+
+
+@router.post("/reports/{report_id}/send-email")
+async def send_report_email(
+    report_id: UUID,
+    user_id: UUID = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(TailoringReport).where(
+            TailoringReport.id == report_id,
+            TailoringReport.user_id == user_id,
+        )
+    )
+    report = result.scalar_one_or_none()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if report.status != "completed":
+        raise HTTPException(status_code=400, detail="Report is not completed yet")
+
+    user_result = await db.execute(select(User.email).where(User.id == user_id))
+    user_email = user_result.scalar_one_or_none()
+    if not user_email:
+        raise HTTPException(status_code=400, detail="No email found for user")
+
+    try:
+        from services.pdf import generate_report_pdf
+        from services.integrations.brevo import brevo_email
+        from config.settings import settings
+
+        pdf_bytes = generate_report_pdf(
+            match_result=report.match_result or {},
+            report=report.report or {},
+            questions=report.questions or {},
+            rewrites=report.rewrites or {},
+            jd_text=report.jd_text or "",
+        )
+        score = (report.match_result or {}).get("final_score", 0)
+        dashboard_url = f"{settings.cors_origin_list[0] if settings.cors_origin_list else 'http://localhost:3000'}/dashboard/{report_id}"
+        await brevo_email.send_report_notification(
+            to_email=user_email,
+            score=score,
+            report_id=report_id,
+            dashboard_url=dashboard_url,
+            pdf_bytes=pdf_bytes,
+        )
+        return {"message": "Report sent to your email"}
+    except Exception as e:
+        logger.error(f"Failed to send report email: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send email")

@@ -62,6 +62,10 @@ export async function deleteReport(reportId) {
   return request(`/api/reports/${reportId}`, { method: "DELETE" });
 }
 
+export async function sendReportEmail(reportId) {
+  return request(`/api/reports/${reportId}/send-email`, { method: "POST" });
+}
+
 export async function chatWithAI(payload) {
   const res = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",

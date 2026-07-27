@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { fetchReports, fetchReport, fetchChatHistory, deleteReport, streamReportStatus, checkAuth } from "../services/api";
+import { fetchReports, fetchReport, fetchChatHistory, deleteReport, sendReportEmail, streamReportStatus, checkAuth } from "../services/api";
 import GithubSection from "../components/GithubSection";
 
 function ReportSection({ title, color, icon, children, delay }) {
@@ -39,6 +39,7 @@ export default function Dashboard() {
   const [chatMinimized, setChatMinimized] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState(null);
   const [userEmail, setUserEmail] = useState("");
+  const [emailSending, setEmailSending] = useState(false);
   const chatEndRef = useRef(null);
   const abortRef = useRef(null);
 
@@ -422,6 +423,25 @@ export default function Dashboard() {
                 <p className="text-xs text-gray-500 mt-1">
                   Analyzed {formatDate(activeReport.created_at)}
                 </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={async () => {
+                    setEmailSending(true);
+                    try {
+                      await sendReportEmail(activeReport.id);
+                      alert("Report sent to " + userEmail);
+                    } catch (e) {
+                      alert("Failed to send: " + (e.message || "Unknown error"));
+                    } finally {
+                      setEmailSending(false);
+                    }
+                  }}
+                  disabled={emailSending}
+                  className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs font-medium text-gray-400 hover:text-gray-200 hover:bg-white/10 transition disabled:opacity-50"
+                >
+                  {emailSending ? "Sending..." : "Email Report"}
+                </button>
               </div>
               {ats_score != null && (
                 <div className="relative flex items-center justify-center">
