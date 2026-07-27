@@ -8,8 +8,12 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")
-    llm_base_url: str = Field(default="https://api.openai.com/v1", alias="LLM_BASE_URL")
-    llm_model: str = Field(default="gpt-4o-mini", alias="LLM_MODEL")
+    llm_base_url: str = Field(default="https://generativelanguage.googleapis.com/v1beta/openai", alias="LLM_BASE_URL")
+    llm_model: str = Field(default="gemini-2.5-flash", alias="LLM_MODEL")
+
+    llm_fallback_api_key: str = Field(default="", alias="LLM_FALLBACK_API_KEY")
+    llm_fallback_base_url: str = Field(default="https://api.groq.com/openai/v1", alias="LLM_FALLBACK_BASE_URL")
+    llm_fallback_model: str = Field(default="llama-3.3-70b-versatile", alias="LLM_FALLBACK_MODEL")
 
     jwt_secret: str = Field(default="", alias="JWT_SECRET")
 

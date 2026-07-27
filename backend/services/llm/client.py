@@ -19,13 +19,27 @@ def _wrap_document(label: str, text: str) -> str:
 
 class LLMClient:
     def __init__(self):
-        self._client = AsyncOpenAI(
+        self._primary = AsyncOpenAI(
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
             timeout=180.0,
-            max_retries=3,
+            max_retries=2,
         )
-        self.model = settings.llm_model
+        self._primary_model = settings.llm_model
+
+        self._fallback = None
+        self._fallback_model = None
+        if settings.llm_fallback_api_key:
+            self._fallback = AsyncOpenAI(
+                api_key=settings.llm_fallback_api_key,
+                base_url=settings.llm_fallback_base_url,
+                timeout=180.0,
+                max_retries=2,
+            )
+            self._fallback_model = settings.llm_fallback_model
+            logger.info(f"[LLM] Primary: {self._primary_model} | Fallback: {self._fallback_model}")
+        else:
+            logger.info(f"[LLM] Primary: {self._primary_model} | No fallback configured")
 
     @staticmethod
     def _smart_truncate(text: str, max_chars: int) -> str:
@@ -41,7 +55,7 @@ class LLMClient:
         resume = self._smart_truncate(resume, 8000)
         jd = self._smart_truncate(jd, 5000)
         github_context = self._smart_truncate(str(github_context) if github_context else "", 2000)
-        logger.info(f"[LLM] Starting generate_candidate_report | model={self.model} | resume_len={len(resume)} | jd_len={len(jd)}")
+        logger.info(f"[LLM] Starting generate_candidate_report | model={self._primary_model} | resume_len={len(resume)} | jd_len={len(jd)}")
         prompt = f"""Analyze this candidate's resume against the job description.
 
 1. Identify missing keywords that ATS (Applicant Tracking Systems) would look for
@@ -73,7 +87,7 @@ Return ONLY JSON:
         resume = self._smart_truncate(resume, 8000)
         jd = self._smart_truncate(jd, 5000)
         github_context = self._smart_truncate(str(github_context) if github_context else "", 2000)
-        logger.info(f"[LLM] Starting generate_interview_questions | model={self.model} | missing_skills_count={len(missing_skills) if isinstance(missing_skills, list) else '?'}")
+        logger.info(f"[LLM] Starting generate_interview_questions | model={self._primary_model} | missing_skills_count={len(missing_skills) if isinstance(missing_skills, list) else '?'}")
         prompt = f"""Given this candidate's resume and the job description,
 generate interview questions that target the candidate's EXACT skill gaps.
 
@@ -106,7 +120,7 @@ Return ONLY JSON:
             logger.info("[LLM] generate_actionable_rewrites skipped — no low_scoring_chunks")
             return {"rewrites": []}
 
-        logger.info(f"[LLM] Starting generate_actionable_rewrites | model={self.model} | chunks={len(low_scoring_chunks)}")
+        logger.info(f"[LLM] Starting generate_actionable_rewrites | model={self._primary_model} | chunks={len(low_scoring_chunks)}")
         chunks_text = "\n\n".join(
             f"Chunk {c['chunk_index']} (score: {c['score']}):\n{c['text'][:1000]}"
             for c in low_scoring_chunks[:8]
@@ -134,7 +148,7 @@ Return ONLY JSON:
 
     async def classify_document(self, text: str) -> dict:
         truncated = text[:3000]
-        logger.info(f"[LLM] Starting classify_document | model={self.model} | text_len={len(text)}")
+        logger.info(f"[LLM] Starting classify_document | model={self._primary_model} | text_len={len(text)}")
         prompt = f"""Classify this document.
 
 {_wrap_document("Document", truncated)}
@@ -186,15 +200,26 @@ Return ONLY JSON:
     async def _call(self, prompt, system=None, label="llm_call"):
         if system is None:
             system = SYSTEM_PROMPT
-        start = time.monotonic()
-        logger.info(f"[LLM] {label} | API call starting | model={self.model} | base_url={settings.llm_base_url}")
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ]
+
         try:
-            response = await self._client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
+            return await self._try_call(self._primary, self._primary_model, messages, label)
+        except Exception as primary_err:
+            if not self._fallback:
+                raise
+            logger.warning(f"[LLM] {label} | Primary ({self._primary_model}) failed: {primary_err} | Trying fallback...")
+            return await self._try_call(self._fallback, self._fallback_model, messages, label)
+
+    async def _try_call(self, client, model, messages, label):
+        start = time.monotonic()
+        logger.info(f"[LLM] {label} | API call starting | model={model} | base_url={client.base_url}")
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,
                 temperature=0.2,
             )
         except Exception as e:
@@ -228,27 +253,40 @@ Return ONLY JSON:
             return {"raw": text, "cleaned": cleaned, "error": f"JSON parse failed: {e}"}
 
     async def stream_chat(self, messages):
-        logger.info(f"[LLM] Starting stream_chat | model={self.model} | messages={len(messages)}")
-        start = time.monotonic()
-        try:
-            response = await self._client.chat.completions.create(
-                model=self.model, messages=messages, temperature=0.2, stream=True
-            )
-            logger.info(f"[LLM] stream_chat | streaming started ({time.monotonic() - start:.1f}s to first byte)")
-        except Exception as e:
-            elapsed = time.monotonic() - start
-            logger.error(f"[LLM] stream_chat | FAILED after {elapsed:.1f}s | {type(e).__name__}: {e}")
-            raise
-        chunk_count = 0
-        async for chunk in response:
-            if not chunk.choices:
-                continue
-            content = getattr(chunk.choices[0].delta, "content", None)
-            if content:
-                chunk_count += 1
-                yield content
-        elapsed = time.monotonic() - start
-        logger.info(f"[LLM] stream_chat | complete | chunks={chunk_count} | {elapsed:.1f}s")
+        clients = [(self._primary, self._primary_model)]
+        if self._fallback:
+            clients.append((self._fallback, self._fallback_model))
+
+        last_err = None
+        for client, model in clients:
+            logger.info(f"[LLM] Starting stream_chat | model={model} | messages={len(messages)}")
+            start = time.monotonic()
+            try:
+                response = await client.chat.completions.create(
+                    model=model, messages=messages, temperature=0.2, stream=True
+                )
+                logger.info(f"[LLM] stream_chat | streaming started ({time.monotonic() - start:.1f}s to first byte)")
+                chunk_count = 0
+                async for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    content = getattr(chunk.choices[0].delta, "content", None)
+                    if content:
+                        chunk_count += 1
+                        yield content
+                elapsed = time.monotonic() - start
+                logger.info(f"[LLM] stream_chat | complete | chunks={chunk_count} | {elapsed:.1f}s")
+                return
+            except Exception as e:
+                elapsed = time.monotonic() - start
+                logger.error(f"[LLM] stream_chat | {model} FAILED after {elapsed:.1f}s | {type(e).__name__}: {e}")
+                last_err = e
+                if len(clients) > 1:
+                    logger.warning(f"[LLM] stream_chat | Trying fallback...")
+                    continue
+                raise
+        if last_err:
+            raise last_err
 
 
 llm_client = LLMClient()
