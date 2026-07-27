@@ -16,13 +16,13 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 - **Modular Guardrails** -- Split into focused modules: injection, moderation, query, output, rate_limit, upload, pii
 - **Async Job Queue** -- Redis Streams producer/consumer pattern; jobs are submitted instantly (202) and processed in a separate worker with stream trimming (XTRIM ~50), idempotency checks, and persisted stream position across restarts
 - **ATS Compatibility Scoring** -- Deterministic skill matching (semantic + regex) at 70% weight + document similarity at 30%, with category breakdown (skills, experience, education, projects, keywords)
-- **Career Coach AI** -- Hardened LLM prompts focus on ATS optimization; document content treated as untrusted data
+- **Career Coach AI** -- Gemini 2.5 Flash primary with automatic Groq fallback; hardened prompts focus on ATS optimization; document content treated as untrusted data
 - **Actionable Rewrites** -- AI generates rewritten bullet points for weak resume sections
 - **Gap-Focused Interview Prep** -- Questions target the candidate's exact skill gaps with prep tips
 - **Report History** -- All past analyses persist in PostgreSQL with a sidebar dashboard; N+1 queries replaced with bulk fetch; upload page shows recent reports with delete option; max 3 reports per user (older auto-purged)
-- **Streaming Chat** -- Resume-aware conversational follow-ups with JD + GitHub context via RAG; AI messages rendered with ReactMarkdown; errors displayed inline in chat UI
+- **Streaming Chat** -- Resume-aware conversational follow-ups with JD + GitHub context via RAG; AI messages rendered with ReactMarkdown; errors displayed inline in chat UI; minimize/maximize toggle; chat history persists across sessions
 - **Chat Guardrails** -- Input validation (2000-char limit), prompt injection protection, recruitment-domain enforcement, output sanitization, rate limiting
-- **Report Completion Email** -- Brevo sends notification with ATS score, dashboard link, and PDF attachment when analysis completes
+- **Report Completion Email** -- Brevo sends notification with ATS score, dashboard link, and PDF attachment when analysis completes; manual "Send Email" button on demand
 - **JD Embedding Cache** -- Redis-cached JD embeddings (SHA-256 key, 24h TTL) to avoid redundant computation
 - **TTL Auto-Cleanup** -- Old chunks (7d), reports (14d), and orphaned resumes purged automatically to stay within free-tier limits
 - **Background Worker** -- Separate process with retry/backoff, stream trimming, idempotency, persisted stream position (Redis), fresh session on error, email notifications, and periodic cleanup; dual-stream consumption (urgent + email) prevents priority starvation; pending message recovery via XPENDING + XCLAIM
@@ -64,9 +64,12 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 
   Dashboard ──► GET /api/reports ────► Postgres (bulk fetch, no N+1)
                 GET /api/reports/:id ─► Postgres (full report, includes resume_id)
+                DELETE /api/reports/:id ─► Postgres (ownership check + chunk cleanup)
                 SSE /api/reports/:id/stream ─► Redis Pub/Sub (instant push, AbortController cleanup)
+                POST /api/reports/:id/send-email ─► Brevo (manual email on demand)
                 POST /api/chat ──────► Query classification → RAG → LLM → Stream
                                        (delimited JD + resume + GitHub context)
+                GET /api/chat/history/:report_id ─► Redis session store (persisted history)
 ```
 
 ---
@@ -81,7 +84,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 | **Queue** | Redis Streams (Upstash) |
 | **Database** | PostgreSQL (Supabase) via SQLAlchemy + asyncpg + Alembic |
 | **Vector DB** | PostgreSQL + pgvector (resume_chunks table) |
-| **LLM** | NVIDIA API (mistralai/mistral-medium-3.5-128b) via AsyncOpenAI |
+| **LLM** | Gemini 2.5 Flash (primary) + Groq llama-3.3-70b-versatile (fallback) via AsyncOpenAI |
 | **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 (384 dimensions) |
 | **Email** | Brevo (SMTP API via httpx) |
 | **Metrics** | Prometheus (prometheus-fastapi-instrumentator) |
@@ -115,8 +118,8 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   ├── api/
 │   │   ├── auth.py              # POST /api/auth/request-otp, verify-otp, anonymous (constant-time OTP, normalized email)
 │   │   ├── upload.py            # POST /api/upload (validation + classification + dedup)
-│   │   ├── match.py             # POST /api/match (JD validation), GET /api/reports (bulk fetch), DELETE /api/reports/:id
-│   │   ├── chat.py              # POST /api/chat/stream (query classification + RAG + guardrails, message length cap)
+│   │   ├── match.py             # POST /api/match (JD validation), GET /api/reports (bulk fetch), DELETE /api/reports/:id, POST /api/reports/:id/send-email
+│   │   ├── chat.py              # POST /api/chat/stream (query classification + RAG + guardrails, message length cap), GET /api/chat/history/:report_id
 │   │   ├── github.py            # GitHub data ingestion (X-GitHub-Token header, username regex validation)
 │   │   ├── search.py            # Semantic search (auth + ownership check)
 │   │   └── session.py           # Session management (auth + ownership check)
@@ -146,7 +149,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   │   └── pii.py           # PII scrubbing (emails, phones, SSNs, etc.)
 │   │   │
 │   │   ├── llm/
-│   │   │   ├── client.py        # LLM client (document delimiters, classification, injection detection, empty choices handling)
+│   │   │   ├── client.py        # LLM client (Gemini primary + Groq fallback, provider-aware truncation, structured logging)
 │   │   │   └── prompts.py       # Hardened system prompts (domain-restricted)
 │   │   │
 │   │   ├── embedding/
@@ -201,14 +204,14 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   │   ├── pages/
 │   │   │   ├── AuthPage.jsx     # Email OTP sign-in
 │   │   │   ├── UploadPage.jsx   # 3-step wizard (input -> processing -> queued), recent reports with delete
-│   │   │   └── Dashboard.jsx    # Report history, results, chat (immutable state updates)
+│   │   │   └── Dashboard.jsx    # Report history, results, chat (minimize/maximize, delete, email on demand, chat history loading)
 │   │   ├── components/
 │   │   │   ├── ScoreGauge.jsx, SkillsSection.jsx, ReportSection.jsx
 │   │   │   ├── QuestionsSection.jsx, ChatSection.jsx (inline error display), Loader.jsx
 │   │   ├── hooks/
 │   │   │   └── useBackendStatus.js
 │   │   ├── services/
-│   │   │   └── api.js           # Auth + API client with JWT injection, REACT_APP_API_URL
+│   │   │   └── api.js           # Auth + API client with JWT injection, fetchChatHistory, sendReportEmail, deleteReport
 │   │   └── utils/
 │   │       └── pdfGenerator.js
 │   ├── .env                     # REACT_APP_API_URL
@@ -232,7 +235,8 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 - Supabase account (PostgreSQL + pgvector)
 - Upstash account (Redis)
 - Brevo account (email)
-- NVIDIA API key (LLM)
+- Google AI API key (Gemini, free tier)
+- (Optional) Groq API key (free tier, automatic fallback)
 
 ### 1. Set up environment
 
@@ -271,6 +275,8 @@ Open [http://localhost:3000](http://localhost:3000).
 docker compose up --build
 ```
 
+Backend health check uses lightweight `GET /` (not `/api/health`) to avoid DB/Redis dependency during startup. Worker depends on backend `service_healthy` condition with 120s start period.
+
 ---
 
 ## Environment Variables
@@ -280,9 +286,12 @@ docker compose up --build
 | `DATABASE_CONNECTION_STRING` | PostgreSQL connection URL (Supabase) | `postgresql+asyncpg://...` |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL | `https://...` |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token | `AXxx...` |
-| `LLM_API_KEY` | NVIDIA API key | `nvapi-...` |
-| `LLM_BASE_URL` | LLM provider base URL | `https://integrate.api.nvidia.com/v1` |
-| `LLM_MODEL` | Model name | `mistralai/mistral-medium-3.5-128b` |
+| `LLM_API_KEY` | Google AI API key (Gemini) | `AIza...` |
+| `LLM_BASE_URL` | LLM provider base URL | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| `LLM_MODEL` | Primary model name | `gemini-2.0-flash` |
+| `LLM_FALLBACK_API_KEY` | Groq API key (fallback, optional) | `gsk_...` |
+| `LLM_FALLBACK_BASE_URL` | Fallback provider base URL | `https://api.groq.com/openai/v1` |
+| `LLM_FALLBACK_MODEL` | Fallback model name | `llama-3.3-70b-versatile` |
 | `JWT_SECRET` | Secret for signing JWT tokens (validated at startup -- server exits if empty) | 64-char hex string |
 | `BREVO_API_KEY` | Brevo SMTP API key | `xkeysib-...` |
 | `BREVO_FROM_EMAIL` | Verified sender email | `noreply@yourdomain.com` |
@@ -369,7 +378,7 @@ docker compose up --build
 - **CORS** restricted to specific methods and headers (not wildcard)
 - **Content-Security-Policy** header added to index.html
 - **Exception messages** sanitized -- no internal details leaked to clients
-- LLM API key is server-side only (never sent to frontend)
+- LLM API keys are server-side only (never sent to frontend); Gemini primary with Groq automatic fallback
 - Alembic migrations for schema versioning
 - Docker Compose runs `alembic upgrade head` on startup; worker depends on backend healthcheck
 - JD embeddings cached in Redis (SHA-256 key, 24h TTL)

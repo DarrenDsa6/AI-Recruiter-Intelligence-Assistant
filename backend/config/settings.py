@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     llm_api_key: str = Field(default="", alias="LLM_API_KEY")
     llm_base_url: str = Field(default="https://generativelanguage.googleapis.com/v1beta/openai", alias="LLM_BASE_URL")
-    llm_model: str = Field(default="gemini-2.5-flash", alias="LLM_MODEL")
+    llm_model: str = Field(default="gemini-2.0-flash", alias="LLM_MODEL")
 
     llm_fallback_api_key: str = Field(default="", alias="LLM_FALLBACK_API_KEY")
     llm_fallback_base_url: str = Field(default="https://api.groq.com/openai/v1", alias="LLM_FALLBACK_BASE_URL")
@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     github_token: str = Field(default="", alias="GITHUB_TOKEN")
 
     cors_origins: str = Field(default="", alias="CORS_ORIGINS")
+
+    metrics_api_key: str = Field(default="", alias="METRICS_API_KEY")
 
     @field_validator("jwt_secret")
     @classmethod

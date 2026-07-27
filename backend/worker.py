@@ -76,10 +76,12 @@ async def process_job(payload: dict, db, redis):
         logger.info(f"[{report_id}] Step 3/4: Done | questions_count={sum(len(v) for v in questions.values() if isinstance(v, list))}")
 
         logger.info(f"[{report_id}] Step 4/4: Generating actionable rewrites...")
+        low_chunks = match_result.get("low_scoring_chunks", [])
+        logger.info(f"[{report_id}] Step 4/4: low_scoring_chunks count={len(low_chunks)}")
         rewrites = await llm_client.generate_actionable_rewrites(
-            match_result.get("low_scoring_chunks", []), payload["jd_text"]
+            low_chunks, payload["jd_text"]
         )
-        logger.info(f"[{report_id}] Step 4/4: Done | rewrites_count={len(rewrites.get('rewrites', []))}")
+        logger.info(f"[{report_id}] Step 4/4: Done | rewrites_count={len(rewrites.get('rewrites', []))} | rewrites_keys={list(rewrites.keys())}")
         logger.info(f"[{report_id}] All LLM calls complete — saving to database")
 
         await db.execute(
@@ -117,6 +119,9 @@ async def process_job(payload: dict, db, redis):
                         report_id=report_id,
                         dashboard_url=dashboard_url,
                         pdf_bytes=pdf_bytes,
+                        report=report,
+                        questions=questions,
+                        rewrites=rewrites,
                     )
             except Exception as email_err:
                 logger.error(f"Failed to send report email: {email_err}")

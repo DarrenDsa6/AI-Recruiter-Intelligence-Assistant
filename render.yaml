@@ -34,6 +34,8 @@ services:
         sync: false
       - key: CORS_ORIGINS
         sync: false
+      - key: METRICS_API_KEY
+        sync: false
     healthCheckPath: /api/health
 
   - type: worker
@@ -70,4 +72,6 @@ services:
       - key: GITHUB_TOKEN
         sync: false
       - key: CORS_ORIGINS
+        sync: false
+      - key: METRICS_API_KEY
         sync: false

@@ -178,7 +178,9 @@ class MatcherService:
 
     async def _score_chunks(self, documents: list[str], job_description: str, top_n: int = 3) -> list[dict]:
         if not documents:
+            logger.warning("[Matcher] _score_chunks: no documents to score")
             return []
+        logger.info(f"[Matcher] _score_chunks: scoring {len(documents)} chunks against JD")
         jd_embedding = (await asyncio.to_thread(self.embedding_service.get_embeddings, [job_description]))[0]
         chunk_embeddings = await asyncio.to_thread(self.embedding_service.get_embeddings, documents)
         scores = [
@@ -186,7 +188,9 @@ class MatcherService:
             for i, (doc, emb) in enumerate(zip(documents, chunk_embeddings))
         ]
         scores.sort(key=lambda x: x["score"])
-        return scores[:top_n]
+        result = scores[:top_n]
+        logger.info(f"[Matcher] _score_chunks: top {len(result)} lowest scores: {[s['score'] for s in result]}")
+        return result
 
     def _aggregate_embeddings(self, embeddings) -> np.ndarray:
         return np.mean(embeddings, axis=0)

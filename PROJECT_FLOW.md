@@ -48,7 +48,7 @@ The entire analysis runs asynchronously -- the user submits, gets a job ID, and 
 | **Redis (Upstash)** | Serverless Redis. Used for: OTP storage (TTL), rate limiting, job queue (Streams), JD embedding cache, conversation history, health check cache. |
 | **Redis Streams** | Durable job queue. Messages persist until acknowledged. Supports consumer groups for horizontal scaling. Better than Celery for this use case -- no broker dependency. |
 | **sentence-transformers/all-MiniLM-L6-v2** | Lightweight embedding model (384 dimensions). Runs on CPU. Fast enough for real-time embedding. Produces vectors for semantic search. |
-| **NVIDIA API (Mistral Medium)** | Hosted LLM for report generation, interview questions, rewrites, and chat. Chosen for cost/quality balance on the free tier. |
+| **Gemini 2.5 Flash (primary) + Groq (fallback)** | Hosted LLMs for report generation, interview questions, rewrites, and chat. Gemini free tier: 250k TPM, 1500 RPD. Groq automatic failover on errors. |
 | **Brevo** | Transactional email API. Sends OTP codes and report completion notifications. Free tier: 300 emails/day. |
 | **PyMuPDF** | Fast PDF text extraction. Layout-aware mode preserves multi-column flow. |
 | **React 19 + Tailwind CSS** | Modern frontend with utility-first CSS. Dark theme. No CSS-in-JS runtime overhead. |
@@ -106,7 +106,7 @@ The entire analysis runs asynchronously -- the user submits, gets a job ID, and 
 │  │                                                        │   │   │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐│   │   │
 │  │  │database  │ │  redis   │ │ embedding│ │  llm     ││   │   │
-│  │  │(asyncpg) │ │(upstash) │ │(MiniLM)  │ │(NVIDIA)  ││   │   │
+│  │  │(asyncpg) │ │(upstash) │ │(MiniLM)  │ │(Gemini+Groq)  ││   │   │
 │  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘│   │   │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐│   │   │
 │  │  │matching  │ │ storage  │ │cleanup   │ │  pdf     ││   │   │
@@ -617,6 +617,11 @@ POST /api/chat/stream
    │   └── Output guardrails: strip code blocks, URLs, markdown
    │
    └── Save conversation to Redis session store
+
+Chat History Persistence:
+   ├── GET /api/chat/history/{report_id} loads prior messages from Redis session store
+   ├── Dashboard loads chat history when selecting a report
+   └── Chat minimize/maximize toggle (button in header, message count indicator)
 ```
 
 ### Off-topic detection
@@ -634,6 +639,7 @@ This means a message like "tell me about the weather in Seattle" fails gate 1 (n
 - Survives server restarts (unlike in-memory dict)
 - Shared between FastAPI and worker if needed
 - Low latency for reads/writes
+- **Chat history persistence**: Dashboard loads prior messages when selecting a report, so users don't lose context on page refresh
 
 ---
 
@@ -720,7 +726,7 @@ The worker runs cleanup every 100 stream polls (~17 minutes):
 |------|-------|---------|
 | AuthPage | /auth | Email OTP sign-in |
 | UploadPage | / | Upload resume + paste JD -> submit -> queued state; shows recent reports with delete |
-| Dashboard | /dashboard/:reportId | View report results, chat with AI |
+| Dashboard | /dashboard/:reportId | View report results, chat (minimize/maximize), delete reports, send email on demand |
 
 ### Why React Router 7
 

@@ -16,7 +16,7 @@ Redis Streams-backed job queue, pgvector embeddings, multi-layer security, Brevo
 | **State**        | In-memory dict + ChromaDB            | PostgreSQL (users/reports) + pgvector (vectors)|
 | **Queue**        | Synchronous `asyncio.gather`         | Redis Streams (producer/consumer groups)     |
 | **Worker**       | None (in-request LLM calls)         | Separate `worker.py` process                  |
-| **LLM Keys**     | User-supplied per request            | Backend shared key (env var)                  |
+| **LLM** | User-supplied per request | Gemini 2.5 Flash (primary) + Groq (fallback) |
 | **Frontend UX**  | Recruiter dashboard, sync wait/timeout | Candidate portal, async "queued" state      |
 | **Email**        | None                                 | Brevo (OTP + completion notification)         |
 | **Storage**      | ChromaDB keyed by session_id        | PostgreSQL + pgvector keyed by resume_id      |
@@ -248,6 +248,24 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - **UploadPage recent reports**: Shows up to 3 recent reports with status, date, and delete button
 - **"View all reports" button**: Navigates to dashboard from upload page
 
+## Phase 23: LLM Fallback & UX Enhancements -- DONE
+
+- **LLM fallback system**: Gemini 2.5 Flash primary + Groq llama-3.3-70b-versatile automatic failover
+- **Smart truncation**: Provider-aware — Gemini gets 50k/25k/10k chars, Groq fallback rebuilds prompt with 15k/10k/5k limits
+- **Structured LLM logging**: Every call logs start, model, elapsed time, token usage, result keys
+- **Worker retry bug fixed**: Only marks report as failed when `retries >= WORKER_MAX_RETRIES - 1`
+- **Chat history persistence**: GET `/api/chat/history/:report_id` loads prior messages from Redis session store
+- **Email on demand**: POST `/api/reports/:id/send-email` endpoint with "Email Report" button in dashboard
+- **Dashboard delete**: Trash icon with confirmation dialog on report cards
+- **Chat minimize/maximize**: Toggle button in chat header, shows message count when expanded
+- **upstash-redis pipeline fix**: `pipe.execute()` → `pipe.exec()` in 5 files (auth, match, session, rate_limit, session_store)
+- **Health check optimization**: Uses lightweight `GET /` endpoint (not `/api/health`) to avoid DB/Redis dependency
+- **Health check filter**: `HealthCheckFilter` suppresses health check log noise from uvicorn access logs
+- **PDF generation fix**: `_sanitize()` strips non-ASCII chars (smart quotes, em-dashes); each section wrapped in try/except
+- **Dashboard rewrites unwrap**: `activeReport.rewrites.rewrites` to handle `{rewrites:[...]}` structure
+- **Interview Questions section**: Added to Dashboard (gap_focused, technical, behavioral)
+- **LLM prompt fixes**: `how do i crack` regex no longer blocks "crack this interview"; chat prompt relaxed for career coaching
+
 ---
 
 ## Security Notes
@@ -379,6 +397,21 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - [x] Auto-purge: max 3 reports per user (older deleted on new match)
 - [x] UploadPage shows recent reports with delete
 - [x] Double /api/api/ prefix fix (REACT_APP_API_URL empty in Docker)
+- [x] LLM fallback system (Gemini primary + Groq automatic failover)
+- [x] Provider-aware truncation (Gemini 50k/25k/10k, Groq fallback 15k/10k/5k)
+- [x] Structured LLM logging (timing, token usage, provider tracking)
+- [x] Worker retry bug fixed (only marks failed when retries exhausted)
+- [x] Chat history persistence (GET /api/chat/history/:report_id)
+- [x] Email on demand (POST /api/reports/:id/send-email)
+- [x] Dashboard delete (trash icon with confirmation dialog)
+- [x] Chat minimize/maximize (toggle button, message count indicator)
+- [x] upstash-redis pipeline fix (pipe.exec() not pipe.execute())
+- [x] Health check optimization (lightweight GET / endpoint)
+- [x] Health check filter (suppresses log noise from uvicorn)
+- [x] PDF generation fix (unicode sanitization, per-section try/except)
+- [x] Dashboard rewrites unwrap fix (handles {rewrites:[...]})
+- [x] Interview Questions section added to Dashboard
+- [x] LLM prompt fixes (relaxed off-topic regex, career coaching prompt)
 
 ---
 
@@ -463,3 +496,22 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 
 ### Deleted Files (Phase 15)
 - `backend/services/guardrails.py` (replaced by guardrails/ package)
+
+### Modified Files (Phase 23: LLM Fallback & UX Enhancements)
+- `backend/services/llm/client.py` -- Gemini primary + Groq fallback, _call_with_truncation() with provider-aware limits, structured logging
+- `backend/config/settings.py` -- Added LLM_FALLBACK_API_KEY, LLM_FALLBACK_BASE_URL, LLM_FALLBACK_MODEL fields
+- `backend/services/llm/prompts.py` -- Chat prompt relaxed for career coaching questions
+- `backend/services/guardrails/query.py` -- Off-topic regex "crack" no longer blocks "crack interview"
+- `backend/worker.py` -- 4-step progress logging, only marks failed when retries exhausted, pipe.exec()
+- `backend/api/auth.py` -- pipe.exec() fix
+- `backend/api/match.py` -- pipe.exec() fix, send_report_email endpoint, User model import
+- `backend/api/chat.py` -- get_chat_history endpoint added
+- `backend/api/session.py` -- pipe.exec() fix
+- `backend/services/guardrails/rate_limit.py` -- pipe.exec() fix
+- `backend/services/storage/session_store.py` -- pipe.exec() fix
+- `backend/services/pdf/__init__.py` -- _sanitize() for unicode, try/except per section
+- `backend/main.py` -- HealthCheckFilter suppresses health check log noise
+- `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- Rewrites unwrap, Interview Questions, chat minimize/maximize, delete button, email button, chat history
+- `frontend/recruiter-ui/src/pages/UploadPage.jsx` -- Recent reports list with delete
+- `frontend/recruiter-ui/src/services/api.js` -- fetchChatHistory(), sendReportEmail(), deleteReport()
+- `docker-compose.yml` -- Health check uses GET /, start_period: 120s, retries: 10

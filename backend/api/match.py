@@ -320,6 +320,9 @@ async def send_report_email(
             report_id=report_id,
             dashboard_url=dashboard_url,
             pdf_bytes=pdf_bytes,
+            report=report.report or {},
+            questions=report.questions or {},
+            rewrites=report.rewrites or {},
         )
         return {"message": "Report sent to your email"}
     except Exception as e:

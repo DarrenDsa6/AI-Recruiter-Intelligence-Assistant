@@ -126,7 +126,7 @@ process_job(payload):
         │
         ├── Pull resume chunks + embeddings from PostgreSQL (resume_chunks table)
         │
-        ├── PII Scrubber: mask phone numbers, emails, and addresses via regex before sending to NVIDIA API
+        ├── PII Scrubber: mask phone numbers, emails, and addresses via regex before sending to Gemini 2.5 Flash (primary) + Groq (fallback)
         │
         ├── matcher.compute_similarity(chunks, jd, redis)
         │     ├── Extract JD skills (regex + classifier)
@@ -183,6 +183,11 @@ Dashboard connects via SSE → GET /api/reports/:report_id/stream
         │     ├── Interview Questions (gap-focused)
         │     └── Career Coach Chat (RAG over resume + JD + GitHub)
         └── status == "failed" → show error
+
+Dashboard actions:
+        ├── DELETE /api/reports/:id → removes report + chunks (ownership check)
+        ├── POST /api/reports/:id/send-email → Brevo notification with PDF
+        └── GET /api/chat/history/:id → loads prior chat messages from Redis
 ```
 
 ### 6. Follow-Up Chat (with Query Classification + Guardrails)
@@ -355,7 +360,7 @@ Category Breakdown:
 | **Database + Vectors** | PostgreSQL + pgvector (Supabase) via SQLAlchemy + asyncpg |
 | **Migrations** | Alembic + standalone SQL scripts |
 | **Config** | Pydantic BaseSettings (centralized env management) |
-| **LLM** | NVIDIA API (mistralai/mistral-medium-3.5-128b) via AsyncOpenAI |
+| **LLM** | Gemini 2.5 Flash (primary) + Groq llama-3.3-70b-versatile (fallback) via AsyncOpenAI |
 | **Embeddings** | sentence-transformers/all-MiniLM-L6-v2 (384 dimensions) |
 | **Email** | Brevo (SMTP API via httpx) |
 | **Metrics** | Prometheus (prometheus-fastapi-instrumentator) |
@@ -418,8 +423,10 @@ Category Breakdown:
 | `DELETE /api/session/{id}` | `get_current_user` + `MasterResume.user_id == user_id` |
 | `GET /api/reports` | `get_current_user` (bulk fetch via IN clause, filters by user_id) |
 | `DELETE /api/reports/{id}` | `get_current_user` + `TailoringReport.user_id == user_id` |
+| `POST /api/reports/{id}/send-email` | `get_current_user` + `TailoringReport.user_id == user_id` |
 | `GET /api/reports/{id}` | `get_current_user` + `TailoringReport.user_id == user_id` |
 | `GET /api/reports/{id}/stream` | `get_current_user` + `TailoringReport.user_id == user_id` (user_id in poll query) |
+| `GET /api/chat/history/{id}` | `get_current_user` + `TailoringReport.user_id == user_id` |
 
 ---
 
@@ -486,6 +493,8 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 
 15. **TTL auto-cleanup.** Worker periodically purges old chunks (7d), reports (14d), and orphaned resumes to stay within free-tier database limits.
 
+16. **LLM fallback system.** Gemini 2.5 Flash as primary with automatic Groq failover on errors; provider-aware truncation (generous limits for Gemini, safe limits for Groq); structured logging tracks which provider handled each request, timing, and token usage.
+
 ---
 
 ## Production Features
@@ -504,6 +513,10 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 - JD embedding caching (Redis, SHA-256 key, 24h TTL)
 - TTL auto-cleanup (7d chunks, 14d reports, orphaned resumes)
 - Per-user report limit (max 3, older auto-purged on new match)
+- Chat history persistence (GET /api/chat/history/:report_id loads prior messages from Redis session store)
+- Manual email on demand (POST /api/reports/:id/send-email triggers Brevo notification with PDF)
+- Dashboard delete (trash icon with confirmation dialog, ownership check, chunk cleanup)
+- Chat minimize/maximize (toggle button, message count indicator when expanded)
 - Skill derivation at query time (5% storage savings)
 - PII scrubbing before LLM calls (emails, phones, addresses)
 - SSE streaming for job status (instant push, no polling, 5-min timeout)

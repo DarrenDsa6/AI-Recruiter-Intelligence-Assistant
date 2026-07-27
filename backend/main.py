@@ -2,8 +2,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from config.settings import settings
@@ -62,7 +63,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-Instrumentator().instrument(app).expose(app)
+async def _verify_metrics_key(
+    key: str = Security(APIKeyHeader(name="X-API-Key", auto_error=False)),
+):
+    if not settings.metrics_api_key:
+        raise HTTPException(status_code=503, detail="Metrics not configured")
+    if key != settings.metrics_api_key:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+
+Instrumentator().instrument(app).expose(app, dependencies=[Depends(_verify_metrics_key)])
 
 app.include_router(auth_router, prefix="/api")
 app.include_router(upload_router, prefix="/api")

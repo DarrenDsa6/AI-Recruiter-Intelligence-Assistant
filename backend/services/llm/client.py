@@ -1,6 +1,7 @@
 import json
 import time
 import logging
+from typing import Callable
 
 from openai import AsyncOpenAI
 
@@ -11,6 +12,11 @@ logger = logging.getLogger(__name__)
 
 DOC_DELIM_START = "<<<DOCUMENT_DATA_START>>>"
 DOC_DELIM_END = "<<<DOCUMENT_DATA_END>>>"
+
+# Gemini 2.5 Flash: 1M context — use generous limits
+PRIMARY_LIMITS = {"resume": 50000, "jd": 25000, "github": 10000, "chunks": 12, "chunk_len": 2000}
+# Groq llama-3.3-70b: 128k context — safe limits for large prompts with system overhead
+FALLBACK_LIMITS = {"resume": 15000, "jd": 10000, "github": 5000, "chunks": 8, "chunk_len": 1200}
 
 
 def _wrap_document(label: str, text: str) -> str:
@@ -51,21 +57,28 @@ class LLMClient:
             truncated = truncated[:last_newline]
         return truncated + "\n[...truncated]"
 
+    def _make_truncate(self, limits: dict):
+        def truncate(key: str, text: str) -> str:
+            return self._smart_truncate(text, limits[key])
+        return truncate
+
     async def generate_candidate_report(self, resume, jd, match_result, github_context):
-        resume = self._smart_truncate(resume, 8000)
-        jd = self._smart_truncate(jd, 5000)
-        github_context = self._smart_truncate(str(github_context) if github_context else "", 2000)
-        logger.info(f"[LLM] Starting generate_candidate_report | model={self._primary_model} | resume_len={len(resume)} | jd_len={len(jd)}")
-        prompt = f"""Analyze this candidate's resume against the job description.
+        raw = {
+            "resume": resume, "jd": jd,
+            "match_result": match_result, "github_context": github_context or "",
+        }
+
+        def build(inputs, t, limits=None):
+            return f"""Analyze this candidate's resume against the job description.
 
 1. Identify missing keywords that ATS (Applicant Tracking Systems) would look for
 2. Suggest how to rephrase existing experience to better match this JD
 3. Rate the ATS compatibility (not "fit" -- "compatibility")
 
-{_wrap_document("Resume", resume)}
-{_wrap_document("Job Description", jd)}
-{_wrap_document("Match Analysis", json.dumps(match_result, indent=2))}
-{_wrap_document("GitHub", json.dumps(github_context, indent=2))}
+{_wrap_document("Resume", t("resume", inputs["resume"]))}
+{_wrap_document("Job Description", t("jd", inputs["jd"]))}
+{_wrap_document("Match Analysis", json.dumps(inputs["match_result"], indent=2))}
+{_wrap_document("GitHub", json.dumps(t("github", str(inputs["github_context"])), indent=2))}
 
 Return ONLY JSON:
 {{
@@ -78,26 +91,30 @@ Return ONLY JSON:
   "strengths": [],
   "improvement_areas": []
 }}"""
-        result = await self._call(prompt, system=JD_ANALYSIS_SYSTEM_PROMPT, label="generate_candidate_report")
+
+        logger.info(f"[LLM] Starting generate_candidate_report | model={self._primary_model} | resume_len={len(resume)} | jd_len={len(jd)}")
+        result = await self._call_with_truncation(raw, build, JD_ANALYSIS_SYSTEM_PROMPT, "generate_candidate_report")
         if "error" not in result:
             logger.info(f"[LLM] generate_candidate_report complete | ats_score={result.get('ats_score', '?')}")
         return result
 
     async def generate_interview_questions(self, resume, jd, missing_skills, github_context):
-        resume = self._smart_truncate(resume, 8000)
-        jd = self._smart_truncate(jd, 5000)
-        github_context = self._smart_truncate(str(github_context) if github_context else "", 2000)
-        logger.info(f"[LLM] Starting generate_interview_questions | model={self._primary_model} | missing_skills_count={len(missing_skills) if isinstance(missing_skills, list) else '?'}")
-        prompt = f"""Given this candidate's resume and the job description,
+        raw = {
+            "resume": resume, "jd": jd,
+            "missing_skills": missing_skills, "github_context": github_context or "",
+        }
+
+        def build(inputs, t, limits=None):
+            return f"""Given this candidate's resume and the job description,
 generate interview questions that target the candidate's EXACT skill gaps.
 
 Focus on questions the candidate is LIKELY to be asked about their weak areas.
 Provide preparation tips for each question.
 
-{_wrap_document("Resume", resume)}
-{_wrap_document("Job Description", jd)}
-{_wrap_document("Missing Skills", json.dumps(missing_skills))}
-{_wrap_document("GitHub", json.dumps(github_context))}
+{_wrap_document("Resume", t("resume", inputs["resume"]))}
+{_wrap_document("Job Description", t("jd", inputs["jd"]))}
+{_wrap_document("Missing Skills", json.dumps(inputs["missing_skills"]))}
+{_wrap_document("GitHub", json.dumps(t("github", str(inputs["github_context"])), indent=2))}
 
 Return ONLY JSON:
 {{
@@ -107,7 +124,9 @@ Return ONLY JSON:
     {{"question": "", "why_likely": "", "prep_tips": ""}}
   ]
 }}"""
-        result = await self._call(prompt, system=JD_ANALYSIS_SYSTEM_PROMPT, label="generate_interview_questions")
+
+        logger.info(f"[LLM] Starting generate_interview_questions | model={self._primary_model} | missing_skills_count={len(missing_skills) if isinstance(missing_skills, list) else '?'}")
+        result = await self._call_with_truncation(raw, build, JD_ANALYSIS_SYSTEM_PROMPT, "generate_interview_questions")
         if "error" not in result:
             gap_count = len(result.get("gap_focused", []))
             tech_count = len(result.get("technical", []))
@@ -120,17 +139,21 @@ Return ONLY JSON:
             logger.info("[LLM] generate_actionable_rewrites skipped — no low_scoring_chunks")
             return {"rewrites": []}
 
+        raw = {"chunks": low_scoring_chunks, "jd_text": jd_text}
         logger.info(f"[LLM] Starting generate_actionable_rewrites | model={self._primary_model} | chunks={len(low_scoring_chunks)}")
-        chunks_text = "\n\n".join(
-            f"Chunk {c['chunk_index']} (score: {c['score']}):\n{c['text'][:1000]}"
-            for c in low_scoring_chunks[:8]
-        )
 
-        prompt = f"""These resume sections scored lowest
+        def build(inputs, t, limits=None):
+            lim = limits or PRIMARY_LIMITS
+            chunks_text = "\n\n".join(
+                f"Chunk {c['chunk_index']} (score: {c['score']}):\n{c['text'][:lim['chunk_len']]}"
+                for c in inputs["chunks"][:lim["chunks"]]
+            )
+
+            return f"""These resume sections scored lowest
 against the target job description. Generate 3 optimized rewrite alternatives for each.
 
 {_wrap_document("Low-scoring resume chunks", chunks_text)}
-{_wrap_document("Job Description", jd_text)}
+{_wrap_document("Job Description", t("jd", inputs["jd_text"]))}
 
 Return ONLY JSON:
 {{
@@ -141,17 +164,17 @@ Return ONLY JSON:
     }}
   ]
 }}"""
-        result = await self._call(prompt, system=JD_ANALYSIS_SYSTEM_PROMPT, label="generate_actionable_rewrites")
+
+        result = await self._call_with_truncation(raw, build, JD_ANALYSIS_SYSTEM_PROMPT, "generate_actionable_rewrites")
         if "error" not in result:
             logger.info(f"[LLM] generate_actionable_rewrites complete | rewrites_count={len(result.get('rewrites', []))}")
         return result
 
     async def classify_document(self, text: str) -> dict:
-        truncated = text[:3000]
         logger.info(f"[LLM] Starting classify_document | model={self._primary_model} | text_len={len(text)}")
         prompt = f"""Classify this document.
 
-{_wrap_document("Document", truncated)}
+{_wrap_document("Document", text[:5000])}
 
 Return ONLY JSON:
 {{
@@ -196,6 +219,22 @@ Return ONLY JSON:
         is_inj = result.get("is_injection", False)
         confidence = float(result.get("confidence", 0.0))
         return {"is_injection": is_inj, "confidence": confidence, "reason": result.get("reason", "")}
+
+    async def _call_with_truncation(self, raw_inputs: dict, build_prompt: Callable, system: str, label: str):
+        primary_t = self._make_truncate(PRIMARY_LIMITS)
+        prompt = build_prompt(raw_inputs, primary_t, PRIMARY_LIMITS)
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+
+        try:
+            return await self._try_call(self._primary, self._primary_model, messages, label)
+        except Exception as primary_err:
+            if not self._fallback:
+                raise
+            logger.warning(f"[LLM] {label} | Primary ({self._primary_model}) failed: {primary_err} | Trying fallback with reduced context...")
+            fallback_t = self._make_truncate(FALLBACK_LIMITS)
+            prompt = build_prompt(raw_inputs, fallback_t, FALLBACK_LIMITS)
+            messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+            return await self._try_call(self._fallback, self._fallback_model, messages, label)
 
     async def _call(self, prompt, system=None, label="llm_call"):
         if system is None:

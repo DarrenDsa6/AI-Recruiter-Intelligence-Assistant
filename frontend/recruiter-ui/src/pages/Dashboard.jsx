@@ -36,7 +36,7 @@ export default function Dashboard() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
-  const [chatMinimized, setChatMinimized] = useState(false);
+  const [chatMaximized, setChatMaximized] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState(null);
   const [userEmail, setUserEmail] = useState("");
   const [emailSending, setEmailSending] = useState(false);
@@ -263,7 +263,13 @@ export default function Dashboard() {
   const strengths = analysis.strengths || [];
   const gaps = analysis.improvement_areas || analysis.gaps || [];
   const recommendations = analysis.keyword_suggestions || analysis.recommendations || [];
-  const actionableRewrites = activeReport?.rewrites?.rewrites || activeReport?.rewrites || [];
+  const actionableRewrites = (() => {
+    const rw = activeReport?.rewrites;
+    if (!rw) return [];
+    if (Array.isArray(rw)) return rw;
+    if (Array.isArray(rw.rewrites)) return rw.rewrites;
+    return [];
+  })();
   const questions = activeReport?.questions || {};
 
   if (loading) {
@@ -529,25 +535,32 @@ export default function Dashboard() {
               </ReportSection>
             )}
 
-            {actionableRewrites.length > 0 && (
-              <ReportSection title="Actionable Rewrites" color="bg-cyan-900/30 text-cyan-400" icon="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" delay={320}>
+            <ReportSection title="Actionable Rewrites" color="bg-cyan-900/30 text-cyan-400" icon="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" delay={320}>
+                {actionableRewrites.length > 0 ? (
                 <div className="space-y-3">
-                  {actionableRewrites.map((rewrite, i) => (
-                    <div key={i} className="bg-white/[0.03] border border-white/5 rounded-xl p-4 space-y-2">
-                      {rewrite.section && (
-                        <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-medium bg-white/5 text-gray-400 border border-white/5">
-                          {rewrite.section}
-                        </span>
-                      )}
-                      {rewrite.original && (
-                        <p className="text-xs text-gray-500 line-through leading-relaxed">{rewrite.original}</p>
-                      )}
-                      <p className="text-sm text-gray-300 leading-relaxed">{rewrite.rewrite}</p>
-                    </div>
-                  ))}
+                  {actionableRewrites.map((rewrite, i) => {
+                    const orig = rewrite.original_chunk || rewrite.original || "";
+                    const opts = rewrite.rewrite_options || rewrite.rewrites || [];
+                    return (
+                      <div key={i} className="bg-white/[0.03] border border-white/5 rounded-xl p-4 space-y-2">
+                        {orig && (
+                          <p className="text-xs text-gray-500 line-through leading-relaxed">{orig}</p>
+                        )}
+                        {opts.length > 0 ? opts.map((opt, j) => (
+                          <p key={j} className="text-sm text-cyan-300/80 leading-relaxed">
+                            {typeof opt === "string" ? opt : opt.text || opt.rewrite || JSON.stringify(opt)}
+                          </p>
+                        )) : rewrite.rewrite && (
+                          <p className="text-sm text-cyan-300/80 leading-relaxed">{rewrite.rewrite}</p>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
+                ) : (
+                <p className="text-xs text-gray-500">No rewrites generated for this analysis.</p>
+                )}
               </ReportSection>
-            )}
 
             {activeReport.github_analysis && (
               <GithubSection data={activeReport.github_analysis} />
@@ -574,6 +587,7 @@ export default function Dashboard() {
               );
             })()}
 
+            {!chatMaximized && (
             <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl animate-slide-up" style={{ animationDelay: "400ms" }}>
               <div className="px-5 py-4 border-b border-white/5 flex items-center gap-2.5">
                 <div className="w-7 h-7 rounded-lg bg-blue-900/30 flex items-center justify-center">
@@ -582,26 +596,19 @@ export default function Dashboard() {
                   </svg>
                 </div>
                 <h3 className="text-sm font-semibold text-gray-200 flex-1">Career Coach Chat</h3>
-                {chatMessages.length > 0 && !chatMinimized && (
+                {chatMessages.length > 0 && (
                   <span className="text-[10px] text-gray-600 mr-1">{chatMessages.length} msg{chatMessages.length !== 1 ? "s" : ""}</span>
                 )}
                 <button
-                  onClick={() => setChatMinimized(!chatMinimized)}
+                  onClick={() => setChatMaximized(true)}
                   className="w-6 h-6 rounded-md flex items-center justify-center hover:bg-white/10 transition text-gray-500 hover:text-gray-300"
-                  title={chatMinimized ? "Expand chat" : "Minimize chat"}
+                  title="Maximize chat"
                 >
-                  {chatMinimized ? (
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
-                    </svg>
-                  ) : (
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 4.5l-15 15m0 0h11.25m-11.25 0V8.25" />
-                    </svg>
-                  )}
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                  </svg>
                 </button>
               </div>
-              {!chatMinimized && (
               <div className="p-5">
                 {selectedSkill && (
                   <div className="mb-3 flex items-center gap-2">
@@ -682,8 +689,113 @@ export default function Dashboard() {
                   </button>
                 </form>
               </div>
-              )}
             </div>
+            )}
+
+            {chatMaximized && (
+            <div className="fixed inset-0 z-50 bg-[#0B0F19] flex flex-col animate-fade-in">
+              <div className="px-6 py-4 border-b border-white/10 flex items-center gap-3 bg-white/[0.02] backdrop-blur-xl shrink-0">
+                <div className="w-8 h-8 rounded-lg bg-blue-900/30 flex items-center justify-center">
+                  <svg className="w-4.5 h-4.5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+                  </svg>
+                </div>
+                <h3 className="text-base font-semibold text-gray-200 flex-1">Career Coach Chat</h3>
+                {chatMessages.length > 0 && (
+                  <span className="text-xs text-gray-500 mr-1">{chatMessages.length} msg{chatMessages.length !== 1 ? "s" : ""}</span>
+                )}
+                <button
+                  onClick={() => setChatMaximized(false)}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center hover:bg-white/10 transition text-gray-400 hover:text-gray-200"
+                  title="Minimize chat"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 4.5l15 15m0 0H8.25m11.25 0V8.25" />
+                  </svg>
+                </button>
+              </div>
+              <div className="flex-1 overflow-hidden flex flex-col max-w-4xl mx-auto w-full px-6 py-4">
+                {selectedSkill && (
+                  <div className="mb-3 flex items-center gap-2 shrink-0">
+                    <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2.5 py-1 rounded-lg border border-cyan-700/20">
+                      Focused: {selectedSkill}
+                    </span>
+                    <button onClick={() => setSelectedSkill(null)} className="text-xs text-gray-500 hover:text-gray-300 transition">
+                      Clear
+                    </button>
+                  </div>
+                )}
+                <div className="flex-1 overflow-y-auto mb-4 space-y-3">
+                  {chatMessages.length === 0 && (
+                    <div className="flex flex-col items-center justify-center h-full text-center py-8">
+                      <div className="w-14 h-14 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
+                        <svg className="w-7 h-7 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" />
+                        </svg>
+                      </div>
+                      <p className="text-sm text-gray-500">Ask about gaps, rewrites, or interview prep.</p>
+                      <p className="text-xs text-gray-600 mt-1">The coach has full context of your resume and this job.</p>
+                    </div>
+                  )}
+                  {chatMessages.map((msg, i) => (
+                    <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                      {msg.role === "assistant" && (
+                        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-[10px] font-bold text-white mr-2.5 mt-1 shrink-0">
+                          AI
+                        </div>
+                      )}
+                      <div className={`max-w-[70%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${
+                        msg.role === "user"
+                          ? "bg-blue-600/20 text-blue-100 rounded-br-md"
+                          : "bg-white/5 text-gray-400 rounded-bl-md"
+                      }`}>
+                        {msg.role === "assistant" ? (
+                          <div className="prose prose-invert prose-sm max-w-none">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {msg.content}
+                            </ReactMarkdown>
+                          </div>
+                        ) : (
+                          msg.content
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  {chatLoading && (
+                    <div className="flex justify-start">
+                      <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-[10px] font-bold text-white mr-2.5 mt-1 shrink-0">
+                        AI
+                      </div>
+                      <div className="bg-white/5 px-4 py-3 rounded-2xl rounded-bl-md">
+                        <div className="flex gap-1.5">
+                          <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                          <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                          <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+                <form onSubmit={handleChat} className="flex gap-3 shrink-0">
+                  <input
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    placeholder="Ask the career coach..."
+                    className="flex-1 px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 text-sm transition placeholder:text-gray-600"
+                    disabled={chatLoading}
+                  />
+                  <button
+                    type="submit"
+                    disabled={chatLoading || !chatInput.trim()}
+                    className="px-5 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-medium hover:from-blue-500 hover:to-purple-500 disabled:from-white/10 disabled:to-white/5 transition-all disabled:cursor-not-allowed shadow-lg shadow-blue-600/10"
+                  >
+                    Send
+                  </button>
+                </form>
+              </div>
+            </div>
+            )}
           </div>
         )}
       </main>

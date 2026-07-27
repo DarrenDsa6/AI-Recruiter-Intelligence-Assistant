@@ -55,7 +55,7 @@ class ReportPDF(FPDF):
         self.set_text_color(50, 50, 50)
         for item in items:
             if isinstance(item, dict):
-                text = json.dumps(item, indent=2)
+                text = item.get("text", item.get("description", item.get("suggestion", json.dumps(item))))
             else:
                 text = str(item)
             self.multi_cell(0, 5, _sanitize(f"  - {text}"))
@@ -64,9 +64,9 @@ class ReportPDF(FPDF):
     def key_value(self, key, value):
         self.set_font("Helvetica", "B", 10)
         self.set_text_color(50, 50, 50)
-        safe_key = _sanitize(str(key))[:40]
+        safe_key = _sanitize(str(key))
         safe_val = _sanitize(str(value))
-        self.cell(50, 6, safe_key + ":")
+        self.cell(55, 6, safe_key + ":")
         self.set_font("Helvetica", "", 10)
         self.cell(0, 6, safe_val, new_x="LMARGIN", new_y="NEXT")
 
@@ -83,42 +83,62 @@ def generate_report_pdf(
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
-    try:
-        score = match_result.get("final_score", 0)
-        pdf.key_value("ATS Match Score", f"{score}%")
-        pdf.ln(3)
+    def _safe(label, fn):
+        try:
+            fn()
+        except Exception as e:
+            logger.warning(f"PDF section '{label}' skipped: {e}")
 
+    _safe("score", lambda: (
+        pdf.key_value("ATS Match Score", f"{match_result.get('final_score', 0)}%"),
+        pdf.ln(3),
+    ))
+
+    def _score_breakdown():
         category_breakdown = match_result.get("category_breakdown", {})
         if category_breakdown:
             pdf.section_title("Score Breakdown")
             for cat, val in category_breakdown.items():
-                pdf.key_value(_sanitize(cat.replace("_", " ").title()), f"{val}%")
+                display = f"{val}%" if isinstance(val, (int, float)) else str(val)
+                pdf.key_value(_sanitize(cat.replace("_", " ").title()), display)
             pdf.ln(3)
+    _safe("score_breakdown", _score_breakdown)
 
+    def _summary():
         summary = report.get("summary", "")
         if summary:
             pdf.section_title("Summary")
             pdf.body_text(summary)
+    _safe("summary", _summary)
 
+    def _ats_compat():
         ats_score = report.get("ats_score")
         if ats_score is not None:
             pdf.key_value("ATS Compatibility", f"{ats_score}/100")
+    _safe("ats_compat", _ats_compat)
 
+    def _strengths():
         strengths = report.get("strengths", [])
         if strengths:
             pdf.section_title("Strengths")
             pdf.bullet_list(strengths)
+    _safe("strengths", _strengths)
 
+    def _gaps():
         gaps = report.get("improvement_areas", report.get("gaps", []))
         if gaps:
             pdf.section_title("Areas for Improvement")
             pdf.bullet_list(gaps)
+    _safe("gaps", _gaps)
 
+    def _missing():
         missing = report.get("missing_keywords", [])
         if missing:
             pdf.section_title("Missing Keywords")
             pdf.bullet_list(missing)
+    _safe("missing", _missing)
 
+    def _keywords():
         suggestions = report.get("keyword_suggestions", report.get("recommendations", []))
         if suggestions:
             pdf.section_title("Keyword Suggestions")
@@ -132,7 +152,9 @@ def generate_report_pdf(
                 else:
                     pdf.bullet_list([str(s)])
             pdf.ln(2)
+    _safe("keywords", _keywords)
 
+    def _gap_questions():
         gap_questions = questions.get("gap_focused", [])
         if gap_questions:
             pdf.section_title("Gap-Focused Interview Questions")
@@ -151,7 +173,9 @@ def generate_report_pdf(
                         pdf.set_font("Helvetica", "", 9)
                         pdf.multi_cell(0, 5, _sanitize(f"    Prep tips: {tips}"))
                     pdf.ln(2)
+    _safe("gap_questions", _gap_questions)
 
+    def _tech_questions():
         tech_questions = questions.get("technical", [])
         if tech_questions:
             pdf.section_title("Technical Questions")
@@ -161,7 +185,9 @@ def generate_report_pdf(
                 pdf.set_text_color(50, 50, 50)
                 pdf.multi_cell(0, 5, _sanitize(f"  {i}. {text}"))
             pdf.ln(2)
+    _safe("tech_questions", _tech_questions)
 
+    def _rewrites():
         rewrite_list = rewrites.get("rewrites", [])
         if rewrite_list:
             pdf.section_title("Actionable Resume Rewrites")
@@ -177,14 +203,14 @@ def generate_report_pdf(
                         pdf.set_text_color(37, 99, 235)
                         pdf.multi_cell(0, 5, _sanitize(f"    Option {j}: {opt}"))
                     pdf.ln(3)
+    _safe("rewrites", _rewrites)
 
+    def _jd_ref():
         if jd_text:
             pdf.add_page()
             pdf.section_title("Job Description (Reference)")
             pdf.body_text(_sanitize(jd_text[:3000]))
-
-    except Exception as e:
-        logger.error(f"PDF generation error: {e}")
+    _safe("jd_ref", _jd_ref)
 
     buf = io.BytesIO()
     pdf.output(buf)
