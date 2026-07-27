@@ -27,10 +27,20 @@ class LLMClient:
         )
         self.model = settings.llm_model
 
+    @staticmethod
+    def _smart_truncate(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        truncated = text[:max_chars]
+        last_newline = truncated.rfind("\n")
+        if last_newline > max_chars * 0.7:
+            truncated = truncated[:last_newline]
+        return truncated + "\n[...truncated]"
+
     async def generate_candidate_report(self, resume, jd, match_result, github_context):
-        resume = resume[:6000]
-        jd = jd[:4000]
-        github_context = str(github_context)[:2000] if github_context else ""
+        resume = self._smart_truncate(resume, 8000)
+        jd = self._smart_truncate(jd, 5000)
+        github_context = self._smart_truncate(str(github_context) if github_context else "", 2000)
         logger.info(f"[LLM] Starting generate_candidate_report | model={self.model} | resume_len={len(resume)} | jd_len={len(jd)}")
         prompt = f"""Analyze this candidate's resume against the job description.
 
@@ -60,9 +70,9 @@ Return ONLY JSON:
         return result
 
     async def generate_interview_questions(self, resume, jd, missing_skills, github_context):
-        resume = resume[:6000]
-        jd = jd[:4000]
-        github_context = str(github_context)[:2000] if github_context else ""
+        resume = self._smart_truncate(resume, 8000)
+        jd = self._smart_truncate(jd, 5000)
+        github_context = self._smart_truncate(str(github_context) if github_context else "", 2000)
         logger.info(f"[LLM] Starting generate_interview_questions | model={self.model} | missing_skills_count={len(missing_skills) if isinstance(missing_skills, list) else '?'}")
         prompt = f"""Given this candidate's resume and the job description,
 generate interview questions that target the candidate's EXACT skill gaps.
@@ -98,8 +108,8 @@ Return ONLY JSON:
 
         logger.info(f"[LLM] Starting generate_actionable_rewrites | model={self.model} | chunks={len(low_scoring_chunks)}")
         chunks_text = "\n\n".join(
-            f"Chunk {c['chunk_index']} (score: {c['score']}):\n{c['text'][:500]}"
-            for c in low_scoring_chunks[:5]
+            f"Chunk {c['chunk_index']} (score: {c['score']}):\n{c['text'][:1000]}"
+            for c in low_scoring_chunks[:8]
         )
 
         prompt = f"""These resume sections scored lowest
