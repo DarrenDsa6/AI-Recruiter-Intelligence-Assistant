@@ -3,8 +3,9 @@ import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +23,27 @@ from schemas.chat import ChatRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get("/chat/history/{report_id}")
+async def get_chat_history(
+    report_id: UUID,
+    user_id: UUID = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(TailoringReport.resume_id).where(
+            TailoringReport.id == report_id,
+            TailoringReport.user_id == user_id,
+        )
+    )
+    row = result.one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    session_key = f"chat:{user_id}:{row[0]}"
+    history = await session_store.get_conversation_history(session_key)
+    return {"messages": history}
 
 
 @router.post("/chat/stream")

@@ -54,6 +54,10 @@ export async function fetchReport(reportId) {
   return request(`/api/reports/${reportId}`);
 }
 
+export async function fetchChatHistory(reportId) {
+  return request(`/api/chat/history/${reportId}`);
+}
+
 export async function deleteReport(reportId) {
   return request(`/api/reports/${reportId}`, { method: "DELETE" });
 }

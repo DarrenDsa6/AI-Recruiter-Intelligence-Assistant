@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { fetchReports, fetchReport, streamReportStatus, checkAuth } from "../services/api";
+import { fetchReports, fetchReport, fetchChatHistory, streamReportStatus, checkAuth } from "../services/api";
 import GithubSection from "../components/GithubSection";
 
 function ReportSection({ title, color, icon, children, delay }) {
@@ -71,6 +71,12 @@ export default function Dashboard() {
     try {
       const report = await fetchReport(id);
       setActiveReport(report);
+      try {
+        const { messages } = await fetchChatHistory(id);
+        setChatMessages(Array.isArray(messages) ? messages : []);
+      } catch {
+        setChatMessages([]);
+      }
       return report;
     } catch {
       return null;
