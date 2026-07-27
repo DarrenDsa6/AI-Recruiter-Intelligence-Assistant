@@ -58,23 +58,29 @@ async def process_job(payload: dict, db, redis):
     await db.commit()
 
     try:
+        logger.info(f"[{report_id}] Step 1/4: Computing similarity...")
         match_result = await matcher.compute_similarity(db, payload["jd_text"], payload["resume_id"], redis=redis)
-        logger.info(f"Match score: {match_result.get('final_score')}%")
+        logger.info(f"[{report_id}] Step 1/4: Done | match_score={match_result.get('final_score')}%")
 
         resume_text = await vector_store.get_resume_text(db, payload["resume_id"])
         clean_resume = scrub_pii(resume_text)
 
-        logger.info(f"Generating report for: report={report_id}")
+        logger.info(f"[{report_id}] Step 2/4: Generating candidate report...")
         report = await llm_client.generate_candidate_report(clean_resume, payload["jd_text"], match_result, {})
-        logger.info(f"Generating questions for: report={report_id}")
+        logger.info(f"[{report_id}] Step 2/4: Done | ats_score={report.get('ats_score', '?')}")
+
+        logger.info(f"[{report_id}] Step 3/4: Generating interview questions...")
         questions = await llm_client.generate_interview_questions(
             clean_resume, payload["jd_text"], match_result["missing_required"], {}
         )
-        logger.info(f"Generating rewrites for: report={report_id}")
+        logger.info(f"[{report_id}] Step 3/4: Done | questions_count={sum(len(v) for v in questions.values() if isinstance(v, list))}")
+
+        logger.info(f"[{report_id}] Step 4/4: Generating actionable rewrites...")
         rewrites = await llm_client.generate_actionable_rewrites(
             match_result.get("low_scoring_chunks", []), payload["jd_text"]
         )
-        logger.info(f"LLM calls complete for: report={report_id}")
+        logger.info(f"[{report_id}] Step 4/4: Done | rewrites_count={len(rewrites.get('rewrites', []))}")
+        logger.info(f"[{report_id}] All LLM calls complete — saving to database")
 
         await db.execute(
             update(TailoringReport)

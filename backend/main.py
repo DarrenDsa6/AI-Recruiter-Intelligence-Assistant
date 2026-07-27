@@ -25,6 +25,19 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger(__name__)
 
 
+class HealthCheckFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "GET /api/health" in msg:
+            return False
+        if "GET /" in msg and "200" in msg and record.name == "uvicorn.access":
+            return False
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
