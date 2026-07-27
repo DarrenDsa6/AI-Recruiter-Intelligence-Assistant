@@ -21,8 +21,8 @@ class LLMClient:
         self._client = AsyncOpenAI(
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
-            timeout=120.0,
-            max_retries=2,
+            timeout=180.0,
+            max_retries=3,
         )
         self.model = settings.llm_model
 

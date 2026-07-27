@@ -17,7 +17,8 @@ OFF_TOPIC_KEYWORDS = [
     r"\b(write\s+a\s+(story|poem|novel|essay))\b",
     r"\b(translate\s+(to|into)\s+(spanish|french|chinese|german))\b",
     r"\b(play\s+a\s+game|riddle|trivia|puzzle)\b",
-    r"\b(how\s+do\s+i\s+(hack|crack|exploit))\b",
+    r"\b(how\s+do\s+i\s+(hack|exploit))\b",
+    r"\b(how\s+to\s+(hack|exploit|crack)\s+(a|the|this|my|someone))\b",
     r"\b(illegal|unlawful|fraud|scam)\b",
 ]
 
