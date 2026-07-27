@@ -35,6 +35,7 @@ WORKER_CONCURRENCY = 3
 
 async def process_job(payload: dict, db, redis):
     report_id = payload.get("report_id")
+    retries = int(payload.get("retries", 0))
     if not report_id:
         logger.error("Job payload missing 'report_id', skipping")
         return
@@ -43,9 +44,11 @@ async def process_job(payload: dict, db, redis):
         select(TailoringReport.status).where(TailoringReport.id == report_id)
     )
     row = result.one_or_none()
-    if row and row[0] in ("completed", "failed"):
-        logger.info(f"Skipping already {row[0]} report={report_id}")
+    if row and row[0] == "completed":
+        logger.info(f"Skipping already completed report={report_id}")
         return
+    if row and row[0] == "failed" and retries < WORKER_MAX_RETRIES:
+        logger.info(f"Retrying previously failed report={report_id} (attempt {retries + 1})")
 
     logger.info(f"Processing job: report={report_id}")
 
@@ -115,17 +118,23 @@ async def process_job(payload: dict, db, redis):
     except Exception as e:
         logger.error(f"Job failed: report={report_id}, error={e}")
         error_msg = "An internal error occurred during processing."
-        try:
-            await db.rollback()
-            async with db_module.async_session_factory() as fresh_db:
-                await fresh_db.execute(
-                    update(TailoringReport)
-                    .where(TailoringReport.id == report_id)
-                    .values(status="failed", error_message=error_msg, completed_at=datetime.now(timezone.utc))
-                )
-                await fresh_db.commit()
-        except Exception as update_err:
-            logger.error(f"Failed to mark report as failed: {update_err}")
+        if retries >= WORKER_MAX_RETRIES - 1:
+            try:
+                await db.rollback()
+                async with db_module.async_session_factory() as fresh_db:
+                    await fresh_db.execute(
+                        update(TailoringReport)
+                        .where(TailoringReport.id == report_id)
+                        .values(status="failed", error_message=error_msg, completed_at=datetime.now(timezone.utc))
+                    )
+                    await fresh_db.commit()
+            except Exception as update_err:
+                logger.error(f"Failed to mark report as failed: {update_err}")
+        else:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
         raise
 
 
