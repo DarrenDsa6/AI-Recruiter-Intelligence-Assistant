@@ -255,7 +255,8 @@ export default function Dashboard() {
   const strengths = analysis.strengths || [];
   const gaps = analysis.improvement_areas || analysis.gaps || [];
   const recommendations = analysis.keyword_suggestions || analysis.recommendations || [];
-  const actionableRewrites = activeReport?.rewrites || [];
+  const actionableRewrites = activeReport?.rewrites?.rewrites || activeReport?.rewrites || [];
+  const questions = activeReport?.questions || {};
 
   if (loading) {
     return (
@@ -500,6 +501,27 @@ export default function Dashboard() {
             {activeReport.github_analysis && (
               <GithubSection data={activeReport.github_analysis} />
             )}
+
+            {(() => {
+              const gapQuestions = questions.gap_focused || [];
+              const techQuestions = questions.technical || [];
+              const behaviorQuestions = questions.behavioral || [];
+              const allQuestions = [...techQuestions, ...behaviorQuestions, ...gapQuestions];
+              if (allQuestions.length === 0) return null;
+              return (
+                <ReportSection title="Interview Questions" color="bg-amber-900/30 text-amber-400" icon="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z" delay={400}>
+                  <div className="space-y-3">
+                    {allQuestions.map((q, i) => (
+                      <div key={i} className="bg-white/[0.03] border border-white/5 rounded-xl p-4 space-y-2">
+                        <p className="text-sm text-gray-300 leading-relaxed font-medium">{q.question}</p>
+                        {q.why_likely && <p className="text-xs text-gray-500">{q.why_likely}</p>}
+                        {q.prep_tips && <p className="text-xs text-amber-400/70">{q.prep_tips}</p>}
+                      </div>
+                    ))}
+                  </div>
+                </ReportSection>
+              );
+            })()}
 
             <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl animate-slide-up" style={{ animationDelay: "400ms" }}>
               <div className="px-5 py-4 border-b border-white/5 flex items-center gap-2.5">
