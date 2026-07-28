@@ -49,7 +49,7 @@ export default function Dashboard() {
 
   const handleLogout = async () => {
     try {
-      await fetch(`${process.env.REACT_APP_API_URL ?? ""}/api/auth/logout`, {
+      await fetch(`${process.env.REACT_APP_API_URL ?? "http://localhost:8000"}/api/auth/logout`, {
         method: "POST",
         credentials: "include",
       });
@@ -103,7 +103,6 @@ export default function Dashboard() {
 
     init();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportId]);
 
   useEffect(() => {
@@ -120,7 +119,6 @@ export default function Dashboard() {
     );
 
     return () => eventSource.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeReport?.id, activeReport?.status]);
 
   useEffect(() => {
@@ -136,7 +134,7 @@ export default function Dashboard() {
     setChatMessages((prev) => [...prev, { role: "user", content: userMsg }]);
     setChatLoading(true);
 
-    const API = (process.env.REACT_APP_API_URL ?? "") + "/api";
+    const API = (process.env.REACT_APP_API_URL ?? "http://localhost:8000") + "/api";
 
     const abortController = new AbortController();
     abortRef.current = abortController;
@@ -179,7 +177,6 @@ export default function Dashboard() {
             const parsed = JSON.parse(json);
             if (parsed.type === "text") {
               fullText = parsed.content;
-              // eslint-disable-next-line no-loop-func
               setChatMessages((prev) => {
                 const updated = [...prev];
                 const last = updated[updated.length - 1];
@@ -193,7 +190,6 @@ export default function Dashboard() {
             }
             if (parsed.type === "error") {
               fullText = parsed.message;
-              // eslint-disable-next-line no-loop-func
               setChatMessages((prev) => {
                 const updated = [...prev];
                 const last = updated[updated.length - 1];

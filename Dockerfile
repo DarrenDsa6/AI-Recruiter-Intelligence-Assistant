@@ -1,7 +1,5 @@
 FROM node:20-slim AS frontend-build
 WORKDIR /app
-ARG REACT_APP_API_URL=
-ENV REACT_APP_API_URL=$REACT_APP_API_URL
 COPY frontend/recruiter-ui/package.json frontend/recruiter-ui/package-lock.json* ./
 RUN npm install
 COPY frontend/recruiter-ui/ ./
