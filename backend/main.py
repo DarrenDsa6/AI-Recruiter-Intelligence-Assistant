@@ -133,10 +133,12 @@ async def health():
 STATIC_DIR = Path(__file__).parent / "static"
 
 if STATIC_DIR.is_dir():
+    @app.api_route("/", methods=["GET", "HEAD"])
+    async def serve_root(request: Request):
+        return FileResponse(str(STATIC_DIR / "index.html"))
+
     @app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
     async def serve_spa(request: Request, full_path: str):
-        if request.method == "HEAD":
-            return FileResponse(str(STATIC_DIR / "index.html"))
         file_path = STATIC_DIR / full_path
         if file_path.is_file():
             return FileResponse(str(file_path))
