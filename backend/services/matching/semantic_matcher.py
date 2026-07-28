@@ -37,7 +37,6 @@ class SemanticMatcher:
             for idx, skill, vec in zip(missing_indices, missing_skills, new_vectors):
                 self.cache.embeddings[skill] = vec
                 vectors[idx] = vec
-            self.cache.save_cache()
 
         return np.array(vectors)
 
