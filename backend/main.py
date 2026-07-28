@@ -134,7 +134,7 @@ async def health():
 STATIC_DIR = Path(__file__).parent / "static"
 
 if STATIC_DIR.is_dir():
-    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="static-assets")
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static-files")
 
     @app.get("/{full_path:path}")
     async def serve_spa(request: Request, full_path: str):
