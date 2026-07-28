@@ -1,15 +1,14 @@
 services:
   - type: web
-    name: ai-recruiter-backend
-    runtime: python
+    name: ai-recruiter
+    runtime: docker
     repo: https://github.com/YOUR_USER/YOUR_REPO
     plan: free
     region: oregon
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11
+        value: "3.11"
       - key: DATABASE_CONNECTION_STRING
         sync: false
       - key: JWT_SECRET
@@ -33,26 +32,26 @@ services:
       - key: GITHUB_TOKEN
         sync: false
       - key: CORS_ORIGINS
-        sync: false
+        value: ""
       - key: METRICS_API_KEY
         sync: false
       - key: COOKIE_SECURE
         value: "true"
       - key: COOKIE_SAMESITE
-        value: "none"
+        value: "lax"
     healthCheckPath: /api/health
 
   - type: worker
     name: ai-recruiter-worker
-    runtime: python
+    runtime: docker
     repo: https://github.com/YOUR_USER/YOUR_REPO
     plan: free
     region: oregon
-    buildCommand: pip install -r requirements.txt
+    dockerfilePath: ./Dockerfile
     startCommand: python worker.py
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11
+        value: "3.11"
       - key: DATABASE_CONNECTION_STRING
         sync: false
       - key: JWT_SECRET
@@ -76,6 +75,6 @@ services:
       - key: GITHUB_TOKEN
         sync: false
       - key: CORS_ORIGINS
-        sync: false
+        value: ""
       - key: METRICS_API_KEY
         sync: false
