@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const API = (process.env.REACT_APP_API_URL ?? "http://localhost:8000") + "/api";
+const API = (process.env.REACT_APP_API_URL ?? "") + "/api";
 
 function ChatMessage({ role, content }) {
   const isUser = role === "user";
