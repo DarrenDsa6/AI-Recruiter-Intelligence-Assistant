@@ -32,6 +32,9 @@ class Settings(BaseSettings):
 
     metrics_api_key: str = Field(default="", alias="METRICS_API_KEY")
 
+    cookie_secure: bool = Field(default=True, alias="COOKIE_SECURE")
+    cookie_samesite: str = Field(default="lax", alias="COOKIE_SAMESITE")
+
     @field_validator("jwt_secret")
     @classmethod
     def _validate_jwt_secret(cls, v: str) -> str:

@@ -16,6 +16,7 @@ from services.integrations.brevo import brevo_email
 from models.user import User
 from schemas.auth import AuthResponse, RequestOTPRequest, VerifyOTPRequest, MessageResponse
 from config.constants import RATE_LIMIT_WINDOW_SECONDS, JWT_TOKEN_TTL_SECONDS
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -106,8 +107,8 @@ async def verify_otp(
         key="auth_token",
         value=token,
         httponly=True,
-        secure=True,
-        samesite="strict",
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
         max_age=JWT_TOKEN_TTL_SECONDS,
         path="/",
     )
@@ -140,8 +141,8 @@ async def anonymous_login(response: Response, db: AsyncSession = Depends(get_db)
         key="auth_token",
         value=token,
         httponly=True,
-        secure=True,
-        samesite="strict",
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
         max_age=JWT_TOKEN_TTL_SECONDS,
         path="/",
     )
@@ -165,7 +166,7 @@ async def logout(response: Response):
         "auth_token",
         path="/",
         httponly=True,
-        secure=True,
-        samesite="strict",
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
     )
     return {"message": "Logged out"}
