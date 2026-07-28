@@ -1,14 +1,22 @@
 const API_BASE = process.env.REACT_APP_API_URL ?? "http://localhost:8000";
 
+function getStoredToken() {
+  return localStorage.getItem("auth_token");
+}
+
+function authHeaders(extra = {}) {
+  const token = getStoredToken();
+  const headers = { "Content-Type": "application/json", ...extra };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return headers;
+}
+
 async function request(path, { method = "GET", body, headers = {} } = {}) {
   const url = `${API_BASE}${path}`;
   const opts = {
     method,
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...headers,
-    },
+    headers: authHeaders(headers),
   };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
@@ -23,9 +31,13 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
 export async function uploadResumeAndJD(resumeFile) {
   const formData = new FormData();
   formData.append("file", resumeFile);
+  const headers = {};
+  const token = getStoredToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
     credentials: "include",
+    headers,
     body: formData,
   });
   if (!res.ok) {
@@ -70,7 +82,7 @@ export async function chatWithAI(payload) {
   const res = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders(),
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
@@ -80,13 +92,13 @@ export async function chatWithAI(payload) {
   return res;
 }
 
-export async function ingestGitHub(resumeId, username, token) {
+export async function ingestGitHub(resumeId, username, ghToken) {
   const headers = {};
-  if (token) headers["X-GitHub-Token"] = token;
+  if (ghToken) headers["X-GitHub-Token"] = ghToken;
   const res = await fetch(`${API_BASE}/api/github/${resumeId}/${encodeURIComponent(username)}`, {
     method: "POST",
     credentials: "include",
-    headers,
+    headers: authHeaders(headers),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -107,10 +119,12 @@ export async function requestOTP(email) {
 }
 
 export async function verifyOTP(email, otp) {
-  return request("/api/auth/verify-otp", {
+  const data = await request("/api/auth/verify-otp", {
     method: "POST",
     body: { email, otp },
   });
+  if (data?.token) localStorage.setItem("auth_token", data.token);
+  return data;
 }
 
 export async function checkAuth() {
@@ -118,7 +132,8 @@ export async function checkAuth() {
 }
 
 export async function logout() {
-  return request("/api/auth/logout", { method: "POST" });
+  await request("/api/auth/logout", { method: "POST" });
+  localStorage.removeItem("auth_token");
 }
 
 export function streamReportStatus(reportId, onStatus, onError) {
