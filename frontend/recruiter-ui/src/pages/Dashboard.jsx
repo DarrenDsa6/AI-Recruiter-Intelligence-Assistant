@@ -49,7 +49,7 @@ export default function Dashboard() {
 
   const handleLogout = async () => {
     try {
-      await fetch(`${process.env.REACT_APP_API_URL ?? "http://localhost:8000"}/api/auth/logout`, {
+      await fetch(`${process.env.REACT_APP_API_URL ?? ""}/api/auth/logout`, {
         method: "POST",
         credentials: "include",
       });
@@ -134,7 +134,7 @@ export default function Dashboard() {
     setChatMessages((prev) => [...prev, { role: "user", content: userMsg }]);
     setChatLoading(true);
 
-    const API = (process.env.REACT_APP_API_URL ?? "http://localhost:8000") + "/api";
+    const API = (process.env.REACT_APP_API_URL ?? "") + "/api";
 
     const abortController = new AbortController();
     abortRef.current = abortController;
