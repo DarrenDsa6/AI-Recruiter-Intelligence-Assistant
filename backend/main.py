@@ -7,7 +7,6 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
-from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from config.settings import settings
@@ -134,8 +133,6 @@ async def health():
 STATIC_DIR = Path(__file__).parent / "static"
 
 if STATIC_DIR.is_dir():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static-files")
-
     @app.get("/{full_path:path}")
     async def serve_spa(request: Request, full_path: str):
         file_path = STATIC_DIR / full_path
