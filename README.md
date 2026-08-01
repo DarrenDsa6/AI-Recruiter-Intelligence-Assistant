@@ -225,7 +225,6 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 ├── docker-compose.yml
 ├── render.yaml
 ├── .gitignore
-├── MIGRATION_PLAN.md
 └── ARCHITECTURE.md
 ```
 
