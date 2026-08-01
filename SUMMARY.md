@@ -60,4 +60,4 @@ Or run everything at once with `docker compose up --build`.
 
 ---
 
-See `README.md` (features/stack), `ARCHITECTURE.md` (deep dive), `PROJECT_FLOW.md` (end-to-end explanation), `MIGRATION_PLAN.md` (change history).
+See `README.md` (features/stack), `ARCHITECTURE.md` (deep dive), `PROJECT_FLOW.md` (end-to-end explanation).
