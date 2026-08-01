@@ -17,6 +17,8 @@ An **asynchronous, candidate-facing** platform: upload a resume, paste a job des
 
 ## Working flow
 
+![System Architecture](AI_Recruiter_Intelligence.png)
+
 1. **Sign in** -- enter email -> receive 6-digit OTP via Brevo -> verify -> JWT set as `HttpOnly`, `Secure`, `SameSite=Strict` cookie. Anonymous demo login also available (rate-limited).
 
 2. **Upload resume** (`POST /api/upload`) -- magic-byte + size/page/text validation -> two-tier document classification (heuristic + LLM) -> injection/moderation scans -> SHA-256 dedup -> parse -> chunk -> embed into pgvector. Optional GitHub repos ingested afterwards.

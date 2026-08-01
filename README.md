@@ -33,6 +33,8 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 
 ## Architecture
 
+![System Architecture](AI_Recruiter_Intelligence.png)
+
 ```
 Candidate (Browser)                    Backend (FastAPI)                 Infrastructure
 ─────────────────                    ─────────────────                 ──────────────
