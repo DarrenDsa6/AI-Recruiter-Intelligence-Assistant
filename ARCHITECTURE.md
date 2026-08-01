@@ -4,6 +4,8 @@
 
 ---
 
+![System Architecture](AI_Recruiter_Intelligence.png)
+
 ## Data Flow
 
 ### 1. Authentication

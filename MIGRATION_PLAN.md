@@ -10,6 +10,8 @@ Redis Streams-backed job queue, pgvector embeddings, multi-layer security, Brevo
 
 ## Architecture Comparison
 
+![System Architecture](AI_Recruiter_Intelligence.png)
+
 | Layer            | Original                              | Current                                        |
 |------------------|--------------------------------------|------------------------------------------------|
 | **Auth**         | None                                 | Email OTP via Redis + Brevo + JWT             |

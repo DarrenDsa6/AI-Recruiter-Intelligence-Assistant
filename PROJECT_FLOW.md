@@ -68,6 +68,8 @@ The entire analysis runs asynchronously -- the user submits, gets a job ID, and 
 
 ## 3. System Architecture
 
+![System Architecture](AI_Recruiter_Intelligence.png)
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        FRONTEND (React)                          │
