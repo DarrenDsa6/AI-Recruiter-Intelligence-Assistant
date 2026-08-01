@@ -55,8 +55,13 @@ services:
     container_name: prometheus
     ports:
       - "9090:9090"
+    env_file:
+      - ./backend/.env
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus-entrypoint.sh:/etc/prometheus/prometheus-entrypoint.sh:ro
+    entrypoint: ["/bin/sh"]
+    command: ["/etc/prometheus/prometheus-entrypoint.sh"]
     depends_on:
       - backend
     restart: unless-stopped

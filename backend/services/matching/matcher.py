@@ -5,15 +5,19 @@ import logging
 
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from sqlalchemy import select
 
 from services.storage.vector_store import vector_store
 from services.parsing.skills import SkillExtractionService
+from services.parsing import ChunkerService
 from services.matching.semantic_matcher import SemanticMatcher
 from services.matching.skill_classifier import JDSkillClassifier
 from services.matching.skill_gap_analyzer import WeightedSkillGapAnalyzer
 from services.matching.explainer import MatchExplainer
+from services.matching.reranker import reranker
 from services.embedding.embedder import embedder
 from config.constants import JD_EMBEDDING_CACHE_TTL
+from models.resume import MasterResume
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,8 @@ class MatcherService:
         self.weighted_analyzer = WeightedSkillGapAnalyzer()
         self.embedding_service = embedder
         self.explainer = MatchExplainer()
+        self.reranker = reranker
+        self.chunker = ChunkerService()
 
     async def _get_or_cache_jd_embedding(self, redis, job_description: str) -> np.ndarray:
         jd_hash = hashlib.sha256(job_description.encode()).hexdigest()
@@ -42,12 +48,60 @@ class MatcherService:
         logger.debug(f"JD embedding cached: {cache_key}")
         return np.array(embedding)
 
+    async def _rebuild_chunks_from_raw_text(self, db, resume_id) -> bool:
+        result = await db.execute(
+            select(MasterResume.raw_text).where(MasterResume.id == resume_id)
+        )
+        raw_text = result.scalar_one_or_none()
+        if not raw_text:
+            return False
+        try:
+            chunk_dicts = self.chunker.chunk_semantic(raw_text)
+            if not chunk_dicts:
+                chunk_dicts = self.chunker.chunk_text(raw_text)
+            if not chunk_dicts:
+                return False
+
+            chunk_texts = [c["text"] for c in chunk_dicts]
+            chunk_sections = [c.get("section", "general") for c in chunk_dicts]
+            embeddings = await asyncio.to_thread(self.embedding_service.get_embeddings, chunk_texts)
+            if not embeddings:
+                return False
+
+            resume_skills = self.skill_extractor.extract_skills(raw_text)
+            metadatas = [
+                {"source": "resume", "skills": ", ".join(resume_skills), "section": sec}
+                for sec in chunk_sections
+            ]
+            await self.vector_store.add_documents(
+                db=db,
+                documents=chunk_texts,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                resume_id=resume_id,
+            )
+            await db.commit()
+            logger.warning(f"Rebuilt {len(chunk_texts)} resume chunks from raw_text (resume={resume_id})")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to rebuild chunks from raw_text (resume={resume_id}): {e}")
+            await db.rollback()
+            return False
+
     async def compute_similarity(self, db, job_description: str, resume_id, redis=None) -> dict:
         stored_data = await self.vector_store.get_by_resume(db, resume_id)
 
         vecs = stored_data.get("embeddings")
         documents = stored_data.get("documents", [])
         metadatas = stored_data.get("metadatas", [])
+
+        if not vecs:
+            rebuilt = await self._rebuild_chunks_from_raw_text(db, resume_id)
+            if rebuilt:
+                stored_data = await self.vector_store.get_by_resume(db, resume_id)
+                vecs = stored_data.get("embeddings")
+                documents = stored_data.get("documents", [])
+                metadatas = stored_data.get("metadatas", [])
 
         if not vecs:
             raise ValueError("No embeddings found for resume")
@@ -100,6 +154,16 @@ class MatcherService:
             resume_text=resume_text,
         )
 
+        reranked = self.reranker.rerank(job_description, documents, top_k=5)
+
+        pros_cons = self.explainer.generate_pros_cons(
+            matched_skills=matched_skills,
+            missing_skills=weighted_result["missing_required"] + weighted_result["missing_optional"],
+            resume_text=resume_text,
+            jd_text=job_description,
+            matched_chunks=reranked,
+        )
+
         return {
             "required_skills": required_skills,
             "optional_skills": optional_skills,
@@ -114,6 +178,8 @@ class MatcherService:
             "recommendations": weighted_result["recommendations"],
             "low_scoring_chunks": chunk_scores[:3],
             "category_breakdown": category_breakdown,
+            "pros_cons": pros_cons,
+            "reranked_chunks": reranked,
         }
 
     def _compute_category_breakdown(

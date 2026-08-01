@@ -5,8 +5,8 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.security import APIKeyHeader
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from config.settings import settings
@@ -66,11 +66,15 @@ app = FastAPI(
 )
 
 async def _verify_metrics_key(
-    key: str = Security(APIKeyHeader(name="X-API-Key", auto_error=False)),
+    key: str | None = Security(APIKeyHeader(name="X-API-Key", auto_error=False)),
+    bearer: HTTPAuthorizationCredentials | None = Security(HTTPBearer(auto_error=False)),
 ):
     if not settings.metrics_api_key:
         raise HTTPException(status_code=503, detail="Metrics not configured")
-    if key != settings.metrics_api_key:
+    candidate = key
+    if candidate is None and bearer is not None and bearer.credentials:
+        candidate = bearer.credentials
+    if candidate != settings.metrics_api_key:
         raise HTTPException(status_code=403, detail="Invalid API key")
 
 
@@ -113,7 +117,8 @@ async def health():
         else:
             checks["database"] = "not initialized"
     except Exception as e:
-        checks["database"] = f"error: {str(e)}"
+        logger.warning(f"Health check: database error: {e}")
+        checks["database"] = "error"
 
     try:
         from services.redis import get_redis
@@ -121,7 +126,8 @@ async def health():
         await redis.ping()
         checks["redis"] = "ok"
     except Exception as e:
-        checks["redis"] = f"error: {str(e)}"
+        logger.warning(f"Health check: redis error: {e}")
+        checks["redis"] = "error"
 
     if any("error" in v for v in checks.values()):
         checks["status"] = "degraded"
@@ -132,11 +138,14 @@ async def health():
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-if STATIC_DIR.is_dir():
-    @app.api_route("/", methods=["GET", "HEAD"])
-    async def serve_root(request: Request):
-        return FileResponse(str(STATIC_DIR / "index.html"))
+@app.api_route("/", methods=["GET", "HEAD"])
+async def serve_root(request: Request):
+    index = STATIC_DIR / "index.html"
+    if index.is_file():
+        return FileResponse(str(index))
+    return JSONResponse({"status": "ok", "service": "AI Resume Tailor"})
 
+if STATIC_DIR.is_dir():
     @app.api_route("/{full_path:path}", methods=["GET", "HEAD"])
     async def serve_spa(request: Request, full_path: str):
         file_path = STATIC_DIR / full_path

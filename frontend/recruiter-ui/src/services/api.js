@@ -13,11 +13,23 @@ async function request(path, { method = "GET", body, headers = {} } = {}) {
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `HTTP ${res.status}`);
+    const err = await httpError(res);
+    throw err;
   }
   if (res.status === 204) return null;
   return res.json();
+}
+
+async function httpError(res) {
+  let message = `HTTP ${res.status}`;
+  try {
+    const data = await res.json();
+    if (data && typeof data.detail === "string") message = data.detail;
+    else if (data && typeof data.message === "string") message = data.message;
+  } catch {}
+  const err = new Error(message);
+  err.status = res.status;
+  return err;
 }
 
 export async function uploadResumeAndJD(resumeFile) {
@@ -29,8 +41,7 @@ export async function uploadResumeAndJD(resumeFile) {
     body: formData,
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `HTTP ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -62,6 +73,10 @@ export async function deleteReport(reportId) {
   return request(`/api/reports/${reportId}`, { method: "DELETE" });
 }
 
+export async function retryReport(reportId) {
+  return request(`/api/reports/${reportId}/retry`, { method: "POST" });
+}
+
 export async function sendReportEmail(reportId) {
   return request(`/api/reports/${reportId}/send-email`, { method: "POST" });
 }
@@ -74,8 +89,7 @@ export async function chatWithAI(payload) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `HTTP ${res.status}`);
+    throw await httpError(res);
   }
   return res;
 }
@@ -89,8 +103,7 @@ export async function ingestGitHub(resumeId, username, token) {
     headers,
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `HTTP ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -128,7 +141,7 @@ export function streamReportStatus(reportId, onStatus, onError) {
     try {
       const data = JSON.parse(event.data);
       onStatus(data.status);
-      if (data.status === "completed" || data.status === "failed") {
+      if (data.status === "completed" || data.status === "failed" || data.status === "timeout") {
         eventSource.close();
       }
     } catch {}

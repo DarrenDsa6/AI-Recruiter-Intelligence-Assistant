@@ -3,7 +3,7 @@ import logging
 from uuid import UUID
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sklearn.metrics.pairwise import cosine_similarity
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +12,7 @@ from core.dependencies import get_current_user
 from services.database import get_db
 from services.embedding import embedder
 from services.storage import vector_store
+from services.matching.reranker import reranker
 from models.resume import MasterResume
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ async def search_documents(
     resume_id: str,
     query: str,
     top_k: int = 5,
+    mode: str = Query(default="hybrid", enum=["vector", "hybrid"]),
     user_id: UUID = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -43,17 +45,68 @@ async def search_documents(
         query_emb = (await asyncio.to_thread(embedder.get_embeddings, [query]))[0]
         doc_embeddings = stored_data.get("embeddings", [])
         docs = stored_data.get("documents", [])
+        metadatas = stored_data.get("metadatas", [])
 
         if not doc_embeddings:
             return {"results": []}
 
-        scores = cosine_similarity([query_emb], doc_embeddings)[0]
-        top_indices = np.argsort(scores)[-top_k:][::-1]
-
-        results = [{"text": docs[idx], "score": round(float(scores[idx]), 4)} for idx in top_indices]
-        return {"query": query, "results": results}
+        if mode == "hybrid":
+            raw_results = await vector_store.hybrid_search(db, resume_id, query_emb, query, top_k=top_k * 2)
+            result_texts = [r["text"] for r in raw_results]
+            reranked = reranker.rerank(query, result_texts, top_k=top_k)
+            final = []
+            for rr in reranked:
+                idx = rr["index"]
+                original_idx = raw_results[idx]["index"]
+                meta = metadatas[original_idx] if original_idx < len(metadatas) else {}
+                final.append({
+                    "text": rr["text"],
+                    "score": round(rr["score"], 4),
+                    "hybrid_score": raw_results[idx].get("hybrid_score", 0),
+                    "section": meta.get("section", ""),
+                    "chunk_index": meta.get("chunk_index", original_idx),
+                })
+            return {"query": query, "mode": "hybrid", "results": final}
+        else:
+            scores = cosine_similarity([query_emb], doc_embeddings)[0]
+            top_indices = np.argsort(scores)[-top_k:][::-1]
+            results = [
+                {
+                    "text": docs[idx],
+                    "score": round(float(scores[idx]), 4),
+                    "chunk_index": metadatas[idx].get("chunk_index", idx) if idx < len(metadatas) else idx,
+                }
+                for idx in top_indices
+            ]
+            return {"query": query, "mode": "vector", "results": results}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Search failed: {e}")
         raise HTTPException(status_code=500, detail="Search failed. Please try again.")
+
+
+@router.post("/search/{resume_id}/rerank")
+async def search_with_rerank(
+    resume_id: str,
+    query: str,
+    top_k: int = 5,
+    user_id: UUID = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(MasterResume.id).where(
+            MasterResume.id == resume_id,
+            MasterResume.user_id == user_id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Resume not found")
+
+    stored_data = await vector_store.get_by_resume(db, resume_id)
+    docs = stored_data.get("documents", [])
+    if not docs:
+        return {"results": []}
+
+    reranked = reranker.rerank(query, docs, top_k=top_k)
+    return {"query": query, "results": reranked}

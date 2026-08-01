@@ -36,10 +36,12 @@ CREATE TABLE IF NOT EXISTS resume_chunks (
     text TEXT NOT NULL,
     embedding vector(384) NOT NULL,
     skills TEXT,
+    section TEXT,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_resume_chunks_resume_id ON resume_chunks(resume_id);
 CREATE INDEX IF NOT EXISTS ix_resume_chunks_resume_id_chunk ON resume_chunks(resume_id, chunk_index);
+CREATE INDEX IF NOT EXISTS ix_resume_chunks_embedding ON resume_chunks USING hnsw (embedding vector_cosine_ops);
 
 CREATE TABLE IF NOT EXISTS tailoring_reports (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -52,6 +54,9 @@ CREATE TABLE IF NOT EXISTS tailoring_reports (
     report JSONB,
     questions JSONB,
     rewrites JSONB,
+    agent_analysis JSONB,
+    interview_prep JSONB,
+    outreach_email JSONB,
     error_message TEXT,
     created_at TIMESTAMPTZ DEFAULT now(),
     completed_at TIMESTAMPTZ

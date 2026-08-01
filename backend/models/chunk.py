@@ -18,6 +18,7 @@ class ResumeChunk(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding = mapped_column(Vector(384), nullable=False)
     skills: Mapped[str | None] = mapped_column(Text, nullable=True)
+    section: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (

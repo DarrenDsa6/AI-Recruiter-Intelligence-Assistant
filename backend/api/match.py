@@ -27,6 +27,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def _load_github_context(db: AsyncSession, resume_id) -> dict:
+    result = await db.execute(
+        select(MasterResume.github_data).where(MasterResume.id == resume_id)
+    )
+    github_data = result.scalar_one_or_none()
+    if not github_data:
+        return {}
+    if isinstance(github_data, list):
+        return {"repos": github_data}
+    if isinstance(github_data, dict):
+        return github_data if "repos" in github_data else {"repos": github_data}
+    return {}
+
+
 @router.post("/match", response_model=MatchAccepted, status_code=202)
 async def match_job_description(
     body: MatchRequest,
@@ -50,6 +64,8 @@ async def match_job_description(
             detail=f"Daily match limit reached ({RATE_LIMIT_MATCHES_MAX}). Try again tomorrow.",
         )
 
+    await _enforce_report_limit(db, user_id)
+
     classification = await classify_document(body.jd_text)
     logger.info(
         f"JD classified as {classification.doc_type} "
@@ -59,6 +75,11 @@ async def match_job_description(
         raise HTTPException(
             status_code=422,
             detail="The text provided appears to be a resume, not a job description.",
+        )
+    if classification.doc_type == "other" and classification.confidence >= 0.85:
+        raise HTTPException(
+            status_code=422,
+            detail="The text provided doesn't look like a job description. Please paste a real job posting.",
         )
 
     result = await db.execute(
@@ -87,6 +108,7 @@ async def match_job_description(
         "resume_id": str(body.resume_id),
         "jd_text": body.jd_text,
         "send_email": body.send_email,
+        "github_context": await _load_github_context(db, body.resume_id),
     })
     job_stream = WORKER_STREAM_EMAIL if body.send_email else WORKER_STREAM_URGENT
     entry_id = await redis.xadd(job_stream, "*", {"payload": job_payload})
@@ -97,6 +119,23 @@ async def match_job_description(
     await _purge_old_reports(db, user_id)
 
     return MatchAccepted(report_id=report.id)
+
+
+async def _enforce_report_limit(db: AsyncSession, user_id: UUID):
+    result = await db.execute(
+        select(func.count())
+        .select_from(TailoringReport)
+        .where(TailoringReport.user_id == user_id)
+    )
+    count = result.scalar() or 0
+    if count >= MAX_REPORTS_PER_USER:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Report limit reached ({MAX_REPORTS_PER_USER}). "
+                "Delete an existing report before adding a new analysis."
+            ),
+        )
 
 
 async def _purge_old_reports(db: AsyncSession, user_id: UUID):
@@ -111,11 +150,23 @@ async def _purge_old_reports(db: AsyncSession, user_id: UUID):
         if not old_ids:
             return
 
+        # Chunks belong to the resume, not the report. Only delete chunks of
+        # resumes that are no longer referenced by any kept report.
+        purged_resumes = (
+            select(TailoringReport.resume_id)
+            .where(TailoringReport.id.in_(old_ids))
+            .scalar_subquery()
+        )
+        kept_resumes = (
+            select(TailoringReport.resume_id)
+            .where(TailoringReport.id.notin_(old_ids))
+            .scalar_subquery()
+        )
+
         chunk_del = await db.execute(
             delete(ResumeChunk).where(
-                ResumeChunk.resume_id.in_(
-                    select(TailoringReport.resume_id).where(TailoringReport.id.in_(old_ids))
-                )
+                ResumeChunk.resume_id.in_(purged_resumes),
+                ResumeChunk.resume_id.notin_(kept_resumes),
             )
         )
         await db.execute(delete(TailoringReport).where(TailoringReport.id.in_(old_ids)))
@@ -186,6 +237,9 @@ async def get_report(
         "report": report.report,
         "questions": report.questions,
         "rewrites": report.rewrites,
+        "agent_analysis": report.agent_analysis,
+        "interview_prep": report.interview_prep,
+        "outreach_email": report.outreach_email,
         "error_message": report.error_message,
         "created_at": report.created_at.isoformat() if report.created_at else None,
         "completed_at": report.completed_at.isoformat() if report.completed_at else None,
@@ -270,11 +324,52 @@ async def delete_report(
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    resume_id = report.resume_id
-    await db.execute(delete(ResumeChunk).where(ResumeChunk.resume_id == resume_id))
     await db.execute(delete(TailoringReport).where(TailoringReport.id == report_id))
     await db.commit()
     return {"message": "Report deleted"}
+
+
+@router.post("/reports/{report_id}/retry")
+async def retry_report(
+    report_id: UUID,
+    user_id: UUID = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(TailoringReport).where(
+            TailoringReport.id == report_id,
+            TailoringReport.user_id == user_id,
+        )
+    )
+    report = result.scalar_one_or_none()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if report.status in ("pending", "processing"):
+        raise HTTPException(status_code=409, detail="Report is already in progress")
+
+    job_payload = json.dumps({
+        "report_id": str(report.id),
+        "user_id": str(user_id),
+        "resume_id": str(report.resume_id),
+        "jd_text": report.jd_text,
+        "send_email": False,
+        "github_context": await _load_github_context(db, report.resume_id),
+    })
+    redis = await get_redis()
+    await redis.xadd(WORKER_STREAM_URGENT, "*", {"payload": job_payload})
+
+    report.status = "pending"
+    report.error_message = None
+    report.completed_at = None
+    await db.commit()
+    await db.refresh(report)
+    logger.info(f"Retry queued: report={report.id}")
+
+    return {
+        "id": report.id,
+        "status": report.status,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+    }
 
 
 @router.post("/reports/{report_id}/send-email")
@@ -305,7 +400,8 @@ async def send_report_email(
         from services.integrations.brevo import brevo_email
         from config.settings import settings
 
-        pdf_bytes = generate_report_pdf(
+        pdf_bytes = await asyncio.to_thread(
+            generate_report_pdf,
             match_result=report.match_result or {},
             report=report.report or {},
             questions=report.questions or {},

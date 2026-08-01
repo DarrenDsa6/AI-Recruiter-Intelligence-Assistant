@@ -5,8 +5,8 @@ React 19 frontend for the AI Resume Tailor platform. Connects to a FastAPI backe
 ## Pages
 
 - **AuthPage** (`/auth`) -- Email OTP sign-in (request code -> verify -> JWT)
-- **UploadPage** (`/`) -- Upload resume + paste JD, optional GitHub username, optional email notification
-- **Dashboard** (`/dashboard/:reportId`) -- Report history sidebar, ATS score, skill gaps, actionable rewrites, interview questions, career coach chat
+- **UploadPage** (`/`) -- Upload resume + paste JD, optional GitHub username, optional email notification; recent reports with delete; report-limit dialog at 3 reports
+- **Dashboard** (`/dashboard/:reportId`) -- Report history sidebar, ATS score, skill gaps, actionable rewrites, interview questions, career coach chat, delete (with confirmation), email on demand
 
 ## Setup
 
@@ -32,6 +32,7 @@ Set `REACT_APP_API_URL` in `.env` to point to the backend (default: `http://loca
 | `UploadPage.jsx` | Drag-drop file upload (PDF/DOCX), JD textarea, GitHub username, email toggle |
 | `Dashboard.jsx` | Report history sidebar, SVG ring gauge, collapsible sections, streaming chat |
 | `GithubSection.jsx` | GitHub insights display (strong/weak signals, skill level, best project) |
+| `ConfirmDialog.jsx` | Reusable modal for confirmations (delete, report-limit notice); danger and info variants |
 
 ## API Client
 
@@ -39,9 +40,10 @@ Set `REACT_APP_API_URL` in `.env` to point to the backend (default: `http://loca
 - Cookie-based auth (httponly cookies)
 - `requestOTP(email)` / `verifyOTP(email, code)`
 - `uploadResumeAndJD(file)` / `startMatch(resumeId, jdText)`
-- `fetchReports()` / `fetchReport(reportId)`
+- `fetchReports()` / `fetchReport(reportId)` / `deleteReport(reportId)`
 - Streaming chat via `POST /api/chat/stream`
 - SSE status streaming via `GET /api/reports/:id/stream`
+- Errors are parsed from JSON bodies into friendly messages with an `err.status` property (used to detect 409 report-limit rejections)
 
 ## Upload Response Types
 

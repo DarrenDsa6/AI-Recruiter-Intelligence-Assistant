@@ -14,7 +14,7 @@ from services.guardrails.query import (
 from services.guardrails.output import sanitize_output
 from services.guardrails.rate_limit import check_rate_limit
 from services.guardrails.upload import validate_upload, validate_jd_text
-from services.guardrails.pii import scrub_pii
+from services.guardrails.pii import scrub_pii, blind_screening_scrub, has_pii
 
 __all__ = [
     "check_injection",
@@ -31,4 +31,6 @@ __all__ = [
     "validate_upload",
     "validate_jd_text",
     "scrub_pii",
+    "blind_screening_scrub",
+    "has_pii",
 ]

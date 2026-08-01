@@ -51,7 +51,7 @@ POST /api/upload (authenticated)
         ├── LAYER 2: Text Extraction & Validation
         │     ├── Layout-aware Parse PDF (PyMuPDF blocks) to preserve multi-column flow
         │     ├── Page count check (max 30 pages for PDF)
-        │     └── Text length check (max 50,000 characters)
+        │     └── Text length check (max 10,000 characters)
         │
         ├── LAYER 3: Document Classification (two-tier)
         │     ├── Tier 1: Keyword heuristic scoring (fast)
@@ -76,11 +76,12 @@ POST /api/upload (authenticated)
 POST /api/match (authenticated)
         │
         ├── JD Validation
-        │     ├── Length check (max 50,000 characters)
+        │     ├── Length check (max 10,000 characters)
         │     ├── Rate limit: max 5 tailoring jobs per user per day
         │     ├── Document classification (must be "jd", not "resume" or "other")
         │     ├── Prompt injection scan (regex + LLM)
-        │     └── Content moderation scan
+        │     ├── Content moderation scan
+        │     └── Report limit check (max 3 per user, 409 if reached -- runs before the LLM classifier)
         │
         ├── Create tailoring_reports row (status: "pending")
         ├── Push to Redis Stream "tailoring-jobs":
@@ -103,15 +104,11 @@ POST /api/match (authenticated)
 ```
 Worker starts, connects to Redis + PostgreSQL
         │
-        ├── Consumer group name: hostname-pid (unique per instance)
-        │
-        ├── Load saved stream position from Redis (worker:last_stream_id)
-        │   └── If no saved position: flush stale stream, start from latest ("$")
-        │
-        ├── Trim stale stream entries (XTRIM MAXLEN ~50)
+        ├── Consumer group: "ai-recruiter" (consumer name: hostname-pid, unique per instance)
+        │   └── Ensure consumer group exists on both streams (mkstream=True)
         │
         ▼
-XREAD from "tailoring-jobs" + "urgent-jobs" (polls every 10s, both streams each iteration)
+XREADGROUP from "tailoring-jobs:urgent" + "tailoring-jobs:email" (polls every 10s, both streams each iteration)
         │
         ├── xclaim with min_idle_time=60000ms (1 minute)
         │   └── Pending recovery: XPENDING → fetch actual msg IDs → XCLAIM (not hardcoded "0-0")
@@ -135,28 +132,26 @@ process_job(payload):
         │     ├── Weighted score: (skill × 0.7) + (doc_sim × 0.3)
         │     └── Category breakdown (skills, experience, education, projects, keywords)
         │
-        ├── llm_client.generate_candidate_report(resume, jd, match_result)
-        │     └── Hardened prompt (documents in delimiters) → ATS score, gaps, rewrites
+        ├── evaluate_ats_match() -- LLM ATS score (overrides heuristic when valid)
+        ├── technical_agent.analyze() -- GitHub portfolio analysis
+        ├── hr_agent.analyze() -- HR signals (tenure, leadership, stability)
+        ├── meta_agent.evaluate() -- meta score combining technical + HR + match
         │
-        ├── llm_client.generate_interview_questions(resume, jd, match_result)
-        │     └── Gap-focused questions with prep tips
-        │
-        ├── llm_client.generate_actionable_rewrites(chunks, jd, match_result)
-        │     └── Rewritten bullet points for weak sections
+        ├── generate_candidate_report() -- ATS report (strengths, gaps, recommendations)
+        ├── generate_interview_questions() -- gap-focused questions with prep tips
+        ├── generate_interview_prep() -- prep notes for likely questions
+        ├── generate_outreach_email() -- recruiter outreach draft
+        ├── generate_actionable_rewrites() -- rewritten bullet points for weak sections
         │
         ├── Save all results to PostgreSQL (status → "completed")
         │
-        ├── Publish to Redis Pub/Sub channel "report:{report_id}" (instant SSE push)
+        ├── Send email via Brevo (score + dashboard link + PDF) when send_email set
         │
-        ├── Send email via Brevo (score + dashboard link + PDF)
-        │
-        ├── Persist stream position to Redis (worker:last_stream_id)
-        └── XTRIM stream (maxlen ~50)
+        └── XACK the stream message after successful processing
 
     On failure:
         ├── Rollback failed transaction
         ├── Mark report as "failed" via fresh DB session (generic error message stored in DB)
-        ├── Publish failed status to Redis Pub/Sub channel
         ├── Retry with re-enqueue (max 3 attempts per report, retries read from payload)
         └── Idempotency prevents duplicate processing on restart
 ```
@@ -171,9 +166,9 @@ Dashboard mounts → GET /api/reports
 Dashboard connects via SSE → GET /api/reports/:report_id/stream
         │
         ├── Authorization: poll query includes user_id for ownership check
-        ├── 5-minute timeout (150 polls × 2s intervals)
-        ├── FastAPI listens to Redis Pub/Sub channel "report_completed:{report_id}"
-        ├── Status pushed instantly to client upon worker completion
+        ├── Completed/failed reports return status immediately (no polling)
+        ├── Otherwise polls report status every 2s (150 polls × 2s = 5-minute timeout)
+        ├── Emits status event when it flips to "completed" / "failed"
         ├── status == "completed" → render full results:
         │     ├── ATS Compatibility Score (SVG ring gauge)
         │     ├── Category Breakdown (skills, experience, education, projects, keywords)
@@ -185,7 +180,7 @@ Dashboard connects via SSE → GET /api/reports/:report_id/stream
         └── status == "failed" → show error
 
 Dashboard actions:
-        ├── DELETE /api/reports/:id → removes report + chunks (ownership check)
+        ├── DELETE /api/reports/:id → removes report + chunks (ownership check; confirmation dialog)
         ├── POST /api/reports/:id/send-email → Brevo notification with PDF
         └── GET /api/chat/history/:id → loads prior chat messages from Redis
 ```
@@ -209,7 +204,7 @@ POST /api/chat/stream (authenticated)
         │
         ├── Fetch report → get jd_text + github_analysis
         ├── Load resume chunks from PostgreSQL (resume_chunks, pgvector cosine search)
-        ├── Load conversation history from Redis session store
+        ├── Load conversation history from PostgreSQL (chat_messages table)
         ├── Embed query (all-MiniLM-L6-v2)
         ├── Retrieve top-5 relevant chunks (pgvector cosine_distance)
         ├── Build LLM system prompt:
@@ -378,7 +373,7 @@ Category Breakdown:
 | Layer | Description |
 |-------|-------------|
 | **File validation** | Magic-byte verification (PDF: `%PDF`, DOCX: `PK\x03\x04`), size limit (10 MB), extension whitelist |
-| **Text validation** | Page count limit (30 pages), extracted text length limit (50,000 chars) |
+| **Text validation** | Page count limit (30 pages), extracted text length limit (10,000 chars) |
 | **Document classification** | Two-tier: keyword heuristics (fast, sync) + LLM classifier (when confidence < 0.80). Returns type + confidence + tier |
 | **Security scans** | Two-tier injection detection (regex 15+ patterns + LLM classifier). Content moderation (pattern matching) |
 
@@ -389,7 +384,7 @@ Category Breakdown:
 | **Classification** | Two-tier verification that text is a JD |
 | **Injection scan** | Same two-tier detection as uploads |
 | **Content moderation** | Same moderation scan as uploads |
-| **Length limit** | 50,000 characters maximum (`MatchRequest.jd_text` schema) |
+| **Length limit** | 10,000 characters maximum (`MatchRequest.jd_text` schema) |
 | **Rate limit** | Max 5 tailoring jobs per user per day |
 
 ### Chat Guardrails (3 layers)
@@ -416,7 +411,7 @@ Category Breakdown:
 | `POST /api/auth/request-otp` | Anonymous (rate-limited: 3/5min OTP, 5/hr anonymous) |
 | `POST /api/auth/verify-otp` | Anonymous (timing-safe OTP comparison via `hmac.compare_digest`) |
 | `POST /api/upload` | `get_current_user` (JWT) |
-| `POST /api/match` | `get_current_user` + `MasterResume.user_id == user_id` |
+| `POST /api/match` | `get_current_user` + `MasterResume.user_id == user_id` + report limit (max 3, 409) |
 | `POST /api/chat/stream` | `get_current_user` + `TailoringReport.user_id == user_id` |
 | `POST /api/github/{id}/{user}` | `get_current_user` + `MasterResume.user_id == user_id` |
 | `GET /api/search/{id}` | `get_current_user` + `MasterResume.user_id == user_id` |
@@ -495,31 +490,31 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 
 16. **LLM fallback system.** Gemini 2.5 Flash as primary with automatic Groq failover on errors; provider-aware truncation (generous limits for Gemini, safe limits for Groq); structured logging tracks which provider handled each request, timing, and token usage.
 
+17. **Per-user report quota, server-enforced.** A user can hold at most 3 reports. `/api/match` returns `409` at the cap (checked before the LLM classifier so rejected submissions burn no tokens), and the user must delete a report before adding another. The old auto-purge is kept only as a race-condition backstop.
+
 ---
 
 ## Production Features
 
 - PostgreSQL + pgvector for data AND embeddings (single DB)
 - Redis-backed session store (survives restarts, auto-expires)
-- Redis Streams for async job processing with xread (consumer groups, hostname-pid naming)
-- Both `tailoring-jobs` and `urgent-jobs` streams checked each iteration (no starvation)
-- Stream trimming (XTRIM MAXLEN ~50) prevents unbounded message accumulation
-- Stream position persisted in Redis (worker:last_stream_id) survives restarts
-- Stale stream flushed on first boot (no saved position)
+- Redis Streams for async job processing with consumer groups (group "ai-recruiter", hostname-pid consumer naming)
+- Both `tailoring-jobs:urgent` and `tailoring-jobs:email` streams checked each iteration (no starvation)
+- Consumer groups created with mkstream=True on startup; messages acknowledged via XACK after processing
 - Idempotency check prevents duplicate processing on worker restart
 - Email OTP + report notifications via Brevo
 - JWT in HttpOnly cookie (httponly, secure, samesite=strict on set AND delete)
 - SHA-256 resume deduplication
 - JD embedding caching (Redis, SHA-256 key, 24h TTL)
 - TTL auto-cleanup (7d chunks, 14d reports, orphaned resumes)
-- Per-user report limit (max 3, older auto-purged on new match)
-- Chat history persistence (GET /api/chat/history/:report_id loads prior messages from Redis session store)
+- Per-user report limit (max 3, server-enforced: new analyses rejected with 409 at the cap; auto-purge kept as race-condition backstop)
+- Chat history persistence (GET /api/chat/history/:report_id loads prior messages from PostgreSQL)
 - Manual email on demand (POST /api/reports/:id/send-email triggers Brevo notification with PDF)
 - Dashboard delete (trash icon with confirmation dialog, ownership check, chunk cleanup)
 - Chat minimize/maximize (toggle button, message count indicator when expanded)
 - Skill derivation at query time (5% storage savings)
 - PII scrubbing before LLM calls (emails, phones, addresses)
-- SSE streaming for job status (instant push, no polling, 5-min timeout)
+- SSE streaming for job status (DB poll every 2s, 5-min timeout, AbortController cleanup)
 - Layout-aware PDF parsing (preserves multi-column flow)
 - Daily match rate limiting (5/day/user)
 - Atomic Redis pipelines for all rate limiters (incr+expire in single call)
@@ -548,7 +543,7 @@ New chunks store `skills = NULL`. Skills are derived at query time via `SkillExt
 - PyMuPDF double-close prevented; DOCX Document objects cleaned up
 - Embedder returns native Python lists (not numpy arrays); both embed_documents and get_embeddings use normalize_embeddings=True
 - GitHub token sent via X-GitHub-Token header; username validated with regex
-- Schema validation: ChatRequest.message max_length=2000, MatchRequest.jd_text max_length=50000
+- Schema validation: ChatRequest.message max_length=2000, MatchRequest.jd_text max_length=10000
 - Modular guardrails package (7 focused modules)
 - Explainable scoring with category breakdowns
 - Alembic database migrations

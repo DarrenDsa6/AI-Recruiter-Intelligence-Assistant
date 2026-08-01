@@ -21,6 +21,9 @@ class ReportDetail(BaseModel):
     report: dict | None
     questions: dict | None
     rewrites: dict | None
+    agent_analysis: dict | None
+    interview_prep: dict | None
+    outreach_email: dict | None
     error_message: str | None
     created_at: datetime
     completed_at: datetime | None

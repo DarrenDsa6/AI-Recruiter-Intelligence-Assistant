@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Text, DateTime, ForeignKey
+from sqlalchemy import Text, DateTime, ForeignKey, Boolean
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,9 @@ class TailoringReport(Base):
     report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     questions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     rewrites: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    agent_analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    interview_prep: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    outreach_email: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
