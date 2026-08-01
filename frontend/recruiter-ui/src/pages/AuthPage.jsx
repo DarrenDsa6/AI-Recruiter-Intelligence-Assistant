@@ -1,6 +1,60 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { requestOTP, verifyOTP } from "../services/api";
+import Brand from "../components/Brand";
+
+const FEATURES = [
+  {
+    icon: "M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+    title: "ATS Compatibility Score",
+    desc: "See exactly how well your resume matches the role",
+  },
+  {
+    icon: "M11.42 15.17l-5.1-5.1m0 0L11.42 4.97m-5.1 5.1H21M3 3v18",
+    title: "Actionable Resume Rewrites",
+    desc: "Turn weak bullet points into interview-winning lines",
+  },
+  {
+    icon: "M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 00-3.213-9.193 2.056 2.056 0 00-1.58-.86H14.25M16.5 18.75h-2.25m0-11.177v-.958c0-.568-.422-1.048-.987-1.106a48.554 48.554 0 00-10.026 0 1.106 1.106 0 00-.987 1.106v7.635m12-6.677v6.677m0 4.5v-4.5m0 0h-12",
+    title: "Gap-Focused Interview Prep",
+    desc: "Practice the questions your skill gaps are most likely to trigger",
+  },
+];
+
+function StepDot({ state }) {
+  if (state === "done") {
+    return (
+      <span className="flex h-6 w-6 items-center justify-center rounded-full border border-primary-400/50 bg-primary-500/10 text-primary-300">
+        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+        </svg>
+      </span>
+    );
+  }
+  return (
+    <span
+      className={`flex h-6 w-6 items-center justify-center rounded-full border text-[11px] font-semibold ${
+        state === "active"
+          ? "border-primary-400/60 bg-primary-500/10 text-primary-300"
+          : "border-white/10 text-neutral-500"
+      }`}
+    >
+      {2}
+    </span>
+  );
+}
+
+function ErrorBanner({ message }) {
+  if (!message) return null;
+  return (
+    <div className="flex items-start gap-2.5 rounded-xl border border-danger-500/25 bg-danger-500/10 px-3.5 py-2.5">
+      <svg className="mt-0.5 h-4 w-4 shrink-0 text-danger-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+      </svg>
+      <p className="text-sm text-danger-300">{message}</p>
+    </div>
+  );
+}
 
 export default function AuthPage() {
   const [email, setEmail] = useState("");
@@ -82,93 +136,78 @@ export default function AuthPage() {
     }
   };
 
-  const features = [
-    { icon: "M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z", label: "ATS Compatibility Score" },
-    { icon: "M11.42 15.17l-5.1-5.1m0 0L11.42 4.97m-5.1 5.1H21M3 3v18", label: "Actionable Resume Rewrites" },
-    { icon: "M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124a17.902 17.902 0 00-3.213-9.193 2.056 2.056 0 00-1.58-.86H14.25M16.5 18.75h-2.25m0-11.177v-.958c0-.568-.422-1.048-.987-1.106a48.554 48.554 0 00-10.026 0 1.106 1.106 0 00-.987 1.106v7.635m12-6.677v6.677m0 4.5v-4.5m0 0h-12", label: "Gap-Focused Interview Prep" },
-  ];
-
   return (
-    <div className="min-h-screen bg-[#0B0F19] flex items-center justify-center p-4">
-      <div className="w-full max-w-md space-y-8 animate-fade-in">
-        <div className="text-center space-y-3">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 shadow-lg shadow-blue-600/20">
-            <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-            </svg>
-          </div>
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-10">
+      <div className="pointer-events-none absolute -top-40 left-1/2 h-96 w-[42rem] -translate-x-1/2 rounded-full bg-primary-500/[0.07] blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-48 -right-32 h-96 w-96 rounded-full bg-primary-600/[0.05] blur-3xl" />
+
+      <div className="relative w-full max-w-md animate-fade-in">
+        <div className="mb-8 flex flex-col items-center gap-4 text-center">
+          <Brand size={52} />
           <div>
-            <h1 className="text-2xl font-bold">AI Resume Tailor</h1>
-            <p className="text-sm text-gray-500 mt-1">
-              {step === "email" ? "Sign in to optimize your resume" : `We sent a code to ${email}`}
+            <h1 className="font-display text-[26px] font-semibold tracking-tight text-white">
+              Sign in to AI Recruiter
+            </h1>
+            <p className="mt-1 text-sm text-neutral-400">
+              {step === "email"
+                ? "We'll send a one-time code to your inbox"
+                : `We sent a 6-digit code to ${email}`}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center justify-center gap-2">
-          <div className={`flex items-center gap-1.5 ${step === "email" ? "text-blue-400" : "text-gray-500"}`}>
-            <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium border ${
-              step === "email" ? "border-blue-500 bg-blue-500/10" : "border-green-500 bg-green-500/10 text-green-400"
-            }`}>
-              {step === "otp" ? (
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                </svg>
-              ) : "1"}
+        <div className="card p-6 sm:p-7">
+          <div className="mb-6 flex items-center justify-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className="flex h-6 w-6 items-center justify-center rounded-full border border-primary-400/60 bg-primary-500/10 text-[11px] font-semibold text-primary-300">
+                1
+              </span>
+              <span className="text-xs font-medium text-neutral-300">Email</span>
             </div>
-            <span className="text-xs font-medium">Email</span>
+            <span className="h-px w-8 bg-primary-400/40" />
+            <div className="flex items-center gap-2">
+              <StepDot state={step === "otp" ? "active" : "pending"} />
+              <span className={`text-xs font-medium ${step === "otp" ? "text-neutral-200" : "text-neutral-500"}`}>Verify</span>
+            </div>
           </div>
-          <div className="w-8 h-px bg-white/10" />
-          <div className={`flex items-center gap-1.5 ${step === "otp" ? "text-blue-400" : "text-gray-600"}`}>
-            <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium border ${
-              step === "otp" ? "border-blue-500 bg-blue-500/10" : "border-white/10"
-            }`}>2</div>
-            <span className="text-xs font-medium">Verify</span>
-          </div>
-        </div>
 
-        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
           {step === "email" ? (
             <form onSubmit={handleRequestOTP} className="space-y-4">
               <div>
-                <label className="text-xs font-medium text-gray-400 mb-1.5 block">Email address</label>
+                <label className="label" htmlFor="auth-email">Email address</label>
                 <input
+                  id="auth-email"
                   type="email"
                   placeholder="you@example.com"
                   value={email}
                   onChange={(e) => { setEmail(e.target.value); setError(""); }}
-                  className="w-full px-4 py-3 rounded-xl bg-white/5 border border-white/10 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20 text-sm transition placeholder:text-gray-600"
+                  className="input"
                   autoFocus
                 />
               </div>
-              {error && (
-                <div className="bg-red-900/20 border border-red-800/30 rounded-xl px-4 py-2.5 flex items-center gap-2">
-                  <svg className="w-4 h-4 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-                  </svg>
-                  <p className="text-sm text-red-300">{error}</p>
-                </div>
-              )}
+              <ErrorBanner message={error} />
               <button
                 type="submit"
                 disabled={loading || !email.trim()}
-                className="w-full py-3 rounded-xl font-semibold text-sm bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 disabled:from-white/10 disabled:to-white/5 disabled:text-gray-600 transition-all disabled:cursor-not-allowed shadow-lg shadow-blue-600/10"
+                className="btn-primary w-full"
               >
                 {loading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <>
+                    <svg className="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
                     Sending...
-                  </span>
-                ) : "Send Code"}
+                  </>
+                ) : (
+                  "Send code"
+                )}
               </button>
             </form>
           ) : (
             <form onSubmit={(e) => { e.preventDefault(); handleVerifyOTP(); }} className="space-y-5">
               <div>
-                <label className="text-xs font-medium text-gray-400 mb-3 block">Verification code</label>
+                <label className="label text-center sm:text-left">Verification code</label>
                 <div className="flex justify-center gap-2" onPaste={handlePaste}>
                   {code.map((digit, i) => (
                     <input
@@ -180,52 +219,54 @@ export default function AuthPage() {
                       value={digit}
                       onChange={(e) => handleCodeChange(i, e.target.value)}
                       onKeyDown={(e) => handleKeyDown(i, e)}
-                      className={`w-11 h-12 rounded-xl bg-white/5 border text-center text-lg font-mono font-semibold transition-all focus:outline-none ${
+                      className={`h-12 w-10 rounded-xl border text-center text-lg font-semibold transition-all outline-none sm:w-11 ${
                         digit
-                          ? "border-blue-500/50 bg-blue-500/5 text-white"
-                          : "border-white/10 text-gray-300"
-                      } focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/20`}
+                          ? "border-primary-400/50 bg-primary-500/10 text-primary-300"
+                          : "border-white/10 bg-white/[0.03] text-neutral-100"
+                      } focus:border-primary-400/60 focus:ring-2 focus:ring-primary-400/20`}
                       autoFocus={i === 0}
                     />
                   ))}
                 </div>
               </div>
-              {error && (
-                <div className="bg-red-900/20 border border-red-800/30 rounded-xl px-4 py-2.5 flex items-center gap-2">
-                  <svg className="w-4 h-4 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-                  </svg>
-                  <p className="text-sm text-red-300">{error}</p>
-                </div>
-              )}
+              <ErrorBanner message={error} />
               <button
                 type="submit"
                 disabled={loading || code.some((d) => !d)}
-                className="w-full py-3 rounded-xl font-semibold text-sm bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 disabled:from-white/10 disabled:to-white/5 disabled:text-gray-600 transition-all disabled:cursor-not-allowed shadow-lg shadow-blue-600/10"
+                className="btn-primary w-full"
               >
                 {loading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <>
+                    <svg className="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
                     Verifying...
-                  </span>
-                ) : "Verify"}
+                  </>
+                ) : (
+                  "Verify & continue"
+                )}
               </button>
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between pt-1">
                 <button
                   type="button"
                   onClick={() => { setStep("email"); setCode(["", "", "", "", "", ""]); setError(""); }}
-                  className="text-xs text-gray-500 hover:text-gray-300 transition"
+                  className="btn-ghost"
                 >
                   Change email
                 </button>
                 <button
                   type="button"
                   disabled={countdown > 0}
-                  onClick={() => { setCountdown(60); requestOTP(email).catch(() => {}); }}
-                  className="text-xs text-blue-400 hover:text-blue-300 transition disabled:text-gray-600 disabled:cursor-not-allowed"
+                  onClick={() => {
+                    setCountdown(60);
+                    setError("");
+                    requestOTP(email).catch((err) => {
+                      setCountdown(0);
+                      setError(err?.message || "Couldn't resend the code. Please try again.");
+                    });
+                  }}
+                  className={`text-xs font-medium transition disabled:pointer-events-none ${countdown > 0 ? "text-neutral-500" : "text-primary-300 hover:text-primary-200"}`}
                 >
                   {countdown > 0 ? `Resend in ${countdown}s` : "Resend code"}
                 </button>
@@ -234,15 +275,18 @@ export default function AuthPage() {
           )}
         </div>
 
-        <div className="space-y-3">
-          {features.map((f, i) => (
-            <div key={i} className={`flex items-center gap-3 text-sm text-gray-500 animate-slide-up stagger-${i + 1}`}>
-              <div className="w-8 h-8 rounded-lg bg-white/5 border border-white/5 flex items-center justify-center shrink-0">
-                <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <div className="mt-8 grid gap-2.5">
+          {FEATURES.map((f, i) => (
+            <div key={i} className={`flex items-center gap-3 rounded-xl border border-white/[0.05] bg-white/[0.02] px-4 py-3 animate-fade-in stagger-${i + 1}`}>
+              <div className="icon-tile">
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                   <path strokeLinecap="round" strokeLinejoin="round" d={f.icon} />
                 </svg>
               </div>
-              <span>{f.label}</span>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-neutral-200">{f.title}</p>
+                <p className="text-xs text-neutral-400">{f.desc}</p>
+              </div>
             </div>
           ))}
         </div>

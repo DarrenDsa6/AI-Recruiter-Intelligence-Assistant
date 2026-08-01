@@ -8,24 +8,25 @@ An asynchronous, candidate-facing platform that analyzes resumes against job des
 
 - **Email OTP Authentication** -- Passwordless sign-in via 6-digit code (Brevo email); OTP compared with constant-time `hmac.compare_digest()` to prevent timing attacks
 - **Resume Ingestion** -- PDF/DOCX upload with magic-byte verification, SHA-256 deduplication; parsed, chunked, and embedded into PostgreSQL via pgvector
-- **Upload Validation** -- File type verification (magic bytes), size limit (10 MB), page limit (30), text length limit (50K chars)
+- **Upload Validation** -- File type verification (magic bytes), size limit (10 MB), page limit (30), text length limit (10K chars)
 - **Document Classification** -- Two-tier classifier: keyword heuristics (fast) + LLM fallback (uncertain cases) with confidence scores
 - **Content Moderation** -- Scans uploaded text for unsafe content before storage
 - **Prompt Injection Defense** -- Two-tier detection: regex patterns + LLM classifier; hardens LLM system prompts with "documents are data only" rules and content delimiters
 - **Query Classification** -- Validates user questions are recruitment-related before RAG; rejects off-topic (threshold: ≥1 match) and injection attempts; short messages no longer bypass checks
 - **Modular Guardrails** -- Split into focused modules: injection, moderation, query, output, rate_limit, upload, pii
-- **Async Job Queue** -- Redis Streams producer/consumer pattern; jobs are submitted instantly (202) and processed in a separate worker with stream trimming (XTRIM ~50), idempotency checks, and persisted stream position across restarts
+- **Async Job Queue** -- Redis Streams producer/consumer pattern; jobs are submitted instantly (202) and processed in a separate worker with consumer groups (XREADGROUP + XACK), idempotency checks, and pending-message recovery (XPENDING + XCLAIM)
 - **ATS Compatibility Scoring** -- Deterministic skill matching (semantic + regex) at 70% weight + document similarity at 30%, with category breakdown (skills, experience, education, projects, keywords)
 - **Career Coach AI** -- Gemini 2.5 Flash primary with automatic Groq fallback; hardened prompts focus on ATS optimization; document content treated as untrusted data
 - **Actionable Rewrites** -- AI generates rewritten bullet points for weak resume sections
 - **Gap-Focused Interview Prep** -- Questions target the candidate's exact skill gaps with prep tips
-- **Report History** -- All past analyses persist in PostgreSQL with a sidebar dashboard; N+1 queries replaced with bulk fetch; upload page shows recent reports with delete option; max 3 reports per user (older auto-purged)
+- **Report History** -- All past analyses persist in PostgreSQL with a sidebar dashboard; N+1 queries replaced with bulk fetch; upload page shows recent reports with delete option; max 3 reports per user -- enforced server-side (new analyses rejected with `409` until a report is deleted), auto-purge kept as a race-condition backstop
+- **Confirm Dialogs** -- Reusable `ConfirmDialog` modal for delete confirmation (upload + dashboard) and the report-limit notice; `.btn-danger` component style for destructive actions
 - **Streaming Chat** -- Resume-aware conversational follow-ups with JD + GitHub context via RAG; AI messages rendered with ReactMarkdown; errors displayed inline in chat UI; minimize/maximize toggle; chat history persists across sessions
 - **Chat Guardrails** -- Input validation (2000-char limit), prompt injection protection, recruitment-domain enforcement, output sanitization, rate limiting
 - **Report Completion Email** -- Brevo sends notification with ATS score, dashboard link, and PDF attachment when analysis completes; manual "Send Email" button on demand
 - **JD Embedding Cache** -- Redis-cached JD embeddings (SHA-256 key, 24h TTL) to avoid redundant computation
 - **TTL Auto-Cleanup** -- Old chunks (7d), reports (14d), and orphaned resumes purged automatically to stay within free-tier limits
-- **Background Worker** -- Separate process with retry/backoff, stream trimming, idempotency, persisted stream position (Redis), fresh session on error, email notifications, and periodic cleanup; dual-stream consumption (urgent + email) prevents priority starvation; pending message recovery via XPENDING + XCLAIM
+- **Background Worker** -- Separate process with retry/backoff, idempotency, fresh session on error, email notifications, and periodic cleanup; dual-stream consumption (urgent + email) prevents priority starvation; pending message recovery via XPENDING + XCLAIM
 - **Security Hardening** -- JWT_SECRET validated at startup, anonymous login rate-limited (5/hr), GitHub token in header (not query param), CORS restricted, CSP header, exception messages sanitized, atomic Redis operations, hostname-pid worker naming
 
 ---
@@ -49,6 +50,7 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
                   │                   ► PostgreSQL + pgvector (embeddings)
                   │
                  POST /api/match ───► JD validation (classification, injection, moderation)
+                  │                     + report-limit check (409 at 3)
                   ◄── 202 Accepted ──► Redis Stream ────────► Worker consumes
                 ┌────────────────────────────┐
                                          │  1. compute_similarity     │
@@ -64,12 +66,12 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 
   Dashboard ──► GET /api/reports ────► Postgres (bulk fetch, no N+1)
                 GET /api/reports/:id ─► Postgres (full report, includes resume_id)
-                DELETE /api/reports/:id ─► Postgres (ownership check + chunk cleanup)
-                SSE /api/reports/:id/stream ─► Redis Pub/Sub (instant push, AbortController cleanup)
+                DELETE /api/reports/:id ─► Postgres (ownership check + chunk cleanup; confirmation dialog)
+                SSE /api/reports/:id/stream ─► DB poll every 2s (5-min timeout, user_id in poll query)
                 POST /api/reports/:id/send-email ─► Brevo (manual email on demand)
                 POST /api/chat ──────► Query classification → RAG → LLM → Stream
                                        (delimited JD + resume + GitHub context)
-                GET /api/chat/history/:report_id ─► Redis session store (persisted history)
+                GET /api/chat/history/:report_id ─► Postgres (persisted chat history)
 ```
 
 ---
@@ -203,17 +205,17 @@ Candidate (Browser)                    Backend (FastAPI)                 Infrast
 │   ├── src/
 │   │   ├── pages/
 │   │   │   ├── AuthPage.jsx     # Email OTP sign-in
-│   │   │   ├── UploadPage.jsx   # 3-step wizard (input -> processing -> queued), recent reports with delete
-│   │   │   └── Dashboard.jsx    # Report history, results, chat (minimize/maximize, delete, email on demand, chat history loading)
+│   │   │   ├── UploadPage.jsx   # 3-step wizard (input -> processing -> queued), recent reports with delete, report-limit dialog (409)
+│   │   │   └── Dashboard.jsx    # Report history, results, chat (minimize/maximize, delete w/ confirmation, email on demand, chat history loading)
 │   │   ├── components/
-│   │   │   ├── ScoreGauge.jsx, SkillsSection.jsx, ReportSection.jsx
-│   │   │   ├── QuestionsSection.jsx, ChatSection.jsx (inline error display), Loader.jsx
+│   │   │   ├── Brand.jsx, GithubSection.jsx
+│   │   │   └── ConfirmDialog.jsx (reusable confirm/danger modal)
 │   │   ├── hooks/
 │   │   │   └── useBackendStatus.js
 │   │   ├── services/
-│   │   │   └── api.js           # Auth + API client with JWT injection, fetchChatHistory, sendReportEmail, deleteReport
+│   │   │   └── api.js           # Auth + API client with JWT injection, fetchChatHistory, sendReportEmail, deleteReport; JSON errors parsed with status code
 │   │   └── utils/
-│   │       └── pdfGenerator.js
+│   │       └── renderHelpers.js
 │   ├── .env                     # REACT_APP_API_URL
 │   ├── Dockerfile
 │   └── nginx.conf               # SSE-specific headers
@@ -335,7 +337,7 @@ Backend health check uses lightweight `GET /` (not `/api/health`) to avoid DB/Re
 - **Magic-byte verification** -- Validates PDF (`%PDF`) and DOCX (`PK\x03\x04`) file headers, not just extension
 - **File size limit** -- 10 MB maximum per upload
 - **Page limit** -- 30 pages maximum for PDFs
-- **Text length limit** -- 50,000 characters maximum extracted text
+- **Text length limit** -- 10,000 characters maximum extracted text
 - **Document classification** -- Two-tier: keyword heuristics (fast) + LLM fallback (uncertain) with confidence scores
 - **Content moderation** -- Scans extracted text for unsafe content before storage
 - **Injection scan** -- Two-tier: regex patterns + LLM classifier for prompt injection detection
@@ -346,7 +348,8 @@ Backend health check uses lightweight `GET /` (not `/api/health`) to avoid DB/Re
 - **Classification check** -- Two-tier verification that text is a JD (not a resume or other content)
 - **Injection scan** -- Same two-tier detection as uploads
 - **Content moderation** -- Same moderation scan as uploads
-- **Length limit** -- 50,000 characters maximum (`MatchRequest.jd_text` max_length)
+- **Length limit** -- 10,000 characters maximum (`MatchRequest.jd_text` max_length)
+- **Report limit** -- Max 3 reports per user; `/api/match` returns `409` when the cap is reached (checked before the LLM classifier so rejected submissions burn no tokens); user must delete a report first
 
 ### Chat Security
 
@@ -383,8 +386,7 @@ Backend health check uses lightweight `GET /` (not `/api/health`) to avoid DB/Re
 - Docker Compose runs `alembic upgrade head` on startup; worker depends on backend healthcheck
 - JD embeddings cached in Redis (SHA-256 key, 24h TTL)
 - Skill cache uses `np.load` (not `pickle.load`) to prevent arbitrary code execution
-- Stream trimming (XTRIM ~50) prevents unbounded message accumulation
-- Stream position persisted in Redis (worker:last_stream_id) survives restarts
+- Consumer groups created with `mkstream=True` on startup; messages acknowledged via XACK after processing
 - Idempotency check skips already-processed reports on worker restart
 - Worker uses `hostname-pid` consumer name (prevents collisions between instances)
 - Worker checks both urgent and email streams each loop (prevents priority starvation)

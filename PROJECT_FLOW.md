@@ -74,12 +74,12 @@ The entire analysis runs asynchronously -- the user submits, gets a job ID, and 
 │                                                                  │
 │  AuthPage ──► UploadPage ──► Dashboard (Report + Chat)           │
 │     │              │                │                             │
-│     │              │                ├── ScoreGauge                │
-│     │              │                ├── SkillsSection             │
-│     │              │                ├── ReportSection             │
-│     │              │                ├── QuestionsSection          │
+│     │              │                ├── ScoreRing (inline)        │
+│     │              │                ├── Skills section (inline)   │
+│     │              │                ├── ReportSection (inline)    │
+│     │              │                ├── Questions section (inline)│
 │     │              │                ├── GithubSection             │
-│     │              │                └── ChatSection (SSE)         │
+│     │              │                └── Chat panel (inline, SSE)  │
 │     │              │                                             │
 │     └──────────────┴──────── HTTP (cookies) ────────────────┐   │
 └─────────────────────────────────────────────────────────────│───┘
@@ -252,7 +252,7 @@ POST /api/upload (multipart/form-data)
    ├── LAYER 2: Text Extraction & Validation
    │   ├── Parse PDF (PyMuPDF) or DOCX (python-docx)
    │   ├── Page count check (max 30 pages for PDF)
-   │   └── Text length check (max 50,000 characters)
+   │   └── Text length check (max 10,000 characters)
    │
    ├── LAYER 3: Document Classification (two-tier)
    │   ├── Tier 1: Keyword heuristic scoring (fast, sync)
@@ -302,7 +302,7 @@ LLMs have context windows. Sending a 10-page resume at once wastes tokens and lo
 
 - 500 chars is roughly 100 words -- enough context for meaningful embedding
 - 50-char overlap prevents losing context at chunk boundaries (e.g., "5 years of experience in" split across chunks)
-- This produces ~100 chunks for a 50,000-char resume (the max)
+- This produces ~20 chunks for a 10,000-char resume (the max)
 
 ---
 
@@ -310,7 +310,7 @@ LLMs have context windows. Sending a 10-page resume at once wastes tokens and lo
 
 ### Why async
 
-LLM calls take 10-30 seconds each. The worker makes 3 LLM calls per job. That's 30-90 seconds of waiting. Making the user wait on an HTTP request would time out. Redis Streams decouples submission from processing.
+LLM calls take 10-30 seconds each. The worker makes 9 LLM calls per job. That's 90-270 seconds of processing. Making the user wait on an HTTP request would time out. Redis Streams decouples submission from processing.
 
 ### Step by step
 
@@ -321,12 +321,13 @@ User pastes JD text into UploadPage
 POST /api/match (authenticated)
    │
    ├── JD Validation
-   │   ├── Length check (max 50,000 characters)
-   │   ├── Rate limit: atomic INCR + EXPIRE on match_rate:{user_id} (max 5 per day)
-   │   ├── Document classification (must be "jd")
-   │   │   └── Rejects if classified as "resume" with confidence >= 0.85
-   │   ├── Prompt injection scan (regex + LLM)
-   │   └── Content moderation scan
+   │    ├── Length check (max 10,000 characters)
+   │    ├── Rate limit: atomic INCR + EXPIRE on match_rate:{user_id} (max 5 per day)
+   │    ├── Document classification (must be "jd")
+   │    │   └── Rejects if classified as "resume" or "other" with confidence >= 0.85
+   │    ├── Prompt injection scan (regex + LLM)
+   │    ├── Content moderation scan
+   │    └── Report limit check (max 3 per user, 409 if reached -- runs before the LLM classifier)
    │
    ├── Create tailoring_reports row (status: "pending")
    │
@@ -341,7 +342,7 @@ POST /api/match (authenticated)
 ### Why rate limit at 5/day
 
 - Free tier budget: Supabase 500MB, Upstash 10K commands/day
-- Each job: ~100 chunks embedded + 3 LLM calls + PDF generation
+- Each job: ~20 chunks embedded + 9 LLM calls + PDF generation
 - 5 jobs/day keeps costs within free tier limits
 - Prevents abuse (someone scripting thousands of analyses)
 
@@ -410,9 +411,15 @@ Worker starts
            ├── Update status --> "processing"
            ├── compute_similarity() -- scoring
            ├── scrub_pii() -- mask sensitive data
-           ├── generate_candidate_report() -- LLM call 1
-           ├── generate_interview_questions() -- LLM call 2
-           ├── generate_actionable_rewrites() -- LLM call 3
+           ├── evaluate_ats_match() -- LLM call 1 (ATS score)
+           ├── technical_agent.analyze() -- LLM call 2 (GitHub analysis)
+           ├── hr_agent.analyze() -- LLM call 3 (HR analysis)
+           ├── meta_agent.evaluate() -- LLM call 4 (meta score)
+           ├── generate_candidate_report() -- LLM call 5
+           ├── generate_interview_questions() -- LLM call 6
+           ├── generate_interview_prep() -- LLM call 7
+           ├── generate_outreach_email() -- LLM call 8
+           ├── generate_actionable_rewrites() -- LLM call 9
            ├── Save results to PostgreSQL (status --> "completed")
            ├── Generate PDF report
            ├── Send email via Brevo (if send_email flag set)
@@ -475,13 +482,19 @@ A single number (e.g., "67%") isn't actionable. Breaking it down tells the user:
 
 ## 9. LLM Report Generation
 
-### Three LLM calls per job
+### Nine LLM calls per job
 
-1. **generate_candidate_report**: ATS score analysis, strengths, gaps, recommendations
-2. **generate_interview_questions**: Technical, behavioral, and gap-focused questions
-3. **generate_actionable_rewrites**: Rewritten bullet points for weak sections
+1. **evaluate_ats_match**: LLM-based ATS score (overrides heuristic if valid)
+2. **technical_agent.analyze**: GitHub portfolio analysis (repo quality, languages, patterns)
+3. **hr_agent.analyze**: HR signals (tenure, leadership, stability) from the resume
+4. **meta_agent.evaluate**: Meta-agent combining technical + HR + match signals
+5. **generate_candidate_report**: ATS score analysis, strengths, gaps, recommendations
+6. **generate_interview_questions**: Technical, behavioral, and gap-focused questions
+7. **generate_interview_prep**: Preparation notes for likely questions
+8. **generate_outreach_email**: Recruiter-style outreach email draft
+9. **generate_actionable_rewrites**: Rewritten bullet points for weak sections
 
-### Why three separate calls
+### Why separate calls
 
 - Each produces a different type of output with different structure
 - Combining them into one prompt would produce lower quality (mixed signals)
@@ -578,7 +591,7 @@ Retrieval-Augmented Generation. Instead of sending the entire resume to the LLM 
 
 ### Why RAG
 
-- A 10-page resume is ~50,000 chars. Most LLM context windows are 8K-128K tokens.
+- A 10-page resume is ~10,000 chars. Most LLM context windows are 8K-128K tokens.
 - RAG reduces the context to ~2,500 chars (5 chunks * 500 chars)
 - Faster, cheaper, and more focused responses
 - The LLM can cite specific evidence from the retrieved chunks
@@ -611,15 +624,15 @@ POST /api/chat/stream
    │   ├── Resume RAG context (5 retrieved chunks)
    │   └── Domain restriction (recruitment-only)
    │
-   ├── Load conversation history from Redis
+   ├── Load conversation history from PostgreSQL
    │
    ├── Stream LLM response token-by-token
    │   └── Output guardrails: strip code blocks, URLs, markdown
    │
-   └── Save conversation to Redis session store
+   └── Save conversation to PostgreSQL (chat_messages table)
 
 Chat History Persistence:
-   ├── GET /api/chat/history/{report_id} loads prior messages from Redis session store
+   ├── GET /api/chat/history/{report_id} loads prior messages from PostgreSQL
    ├── Dashboard loads chat history when selecting a report
    └── Chat minimize/maximize toggle (button in header, message count indicator)
 ```
@@ -633,11 +646,10 @@ Off-topic checking uses two sequential gates:
 
 This means a message like "tell me about the weather in Seattle" fails gate 1 (no recruitment keywords) and would never reach gate 2. A message like "how does my resume compare to weather forecast jobs" passes gate 1 but would likely be allowed since it doesn't match the off-topic regex patterns directly. The threshold is deliberately low (1 match) to minimize false negatives.
 
-### Why conversation history in Redis
+### Why conversation history in PostgreSQL
 
-- Redis has native TTL support -- conversations auto-expire
-- Survives server restarts (unlike in-memory dict)
-- Shared between FastAPI and worker if needed
+- Chat messages are persisted in the `chat_messages` table (report_id, user_id, resume_id, role, content)
+- Survives restarts and is shared between FastAPI and any future worker
 - Low latency for reads/writes
 - **Chat history persistence**: Dashboard loads prior messages when selecting a report, so users don't lose context on page refresh
 
@@ -650,7 +662,7 @@ This means a message like "tell me about the weather in Seattle" fails gate 1 (n
 | Layer | What it catches | How |
 |-------|----------------|-----|
 | File validation | Executables, corrupted files | Magic-byte verification, size limits |
-| Text validation | Oversized documents | Page count (30), text length (50K chars) |
+| Text validation | Oversized documents | Page count (30), text length (10K chars) |
 | Document classification | Non-resume uploads | Two-tier: heuristic + LLM |
 | Security scans | Prompt injection, unsafe content | Regex (15+ patterns) + LLM classifier |
 
@@ -725,8 +737,8 @@ The worker runs cleanup every 100 stream polls (~17 minutes):
 | Page | Route | Purpose |
 |------|-------|---------|
 | AuthPage | /auth | Email OTP sign-in |
-| UploadPage | / | Upload resume + paste JD -> submit -> queued state; shows recent reports with delete |
-| Dashboard | /dashboard/:reportId | View report results, chat (minimize/maximize), delete reports, send email on demand |
+| UploadPage | / | Upload resume + paste JD -> submit -> queued state; shows recent reports with delete; report-limit dialog at 3 |
+| Dashboard | /dashboard/:reportId | View report results, chat (minimize/maximize), delete reports (with confirmation), send email on demand |
 
 ### Why React Router 7
 
@@ -743,7 +755,7 @@ The worker runs cleanup every 100 stream polls (~17 minutes):
 
 ### API base URL
 
-All API requests use `process.env.REACT_APP_API_URL` (CRA convention) with a fallback to `http://localhost:8000`. This is read in `services/api.js`, `ChatSection.jsx`, and `Dashboard.jsx`. Create React App injects `REACT_APP_*` env vars at build time.
+All API requests use `process.env.REACT_APP_API_URL` (CRA convention) with a fallback to `http://localhost:8000`. This is read in `services/api.js` and used by the pages. Create React App injects `REACT_APP_*` env vars at build time.
 
 ### API client
 
@@ -754,7 +766,7 @@ All requests go through `services/api.js`:
 
 ### Dashboard markdown rendering
 
-Chat messages from the AI are rendered using `react-markdown` with the `remark-gfm` plugin. This allows the LLM to return markdown-formatted responses (bold, lists, code blocks, tables) that render properly in the chat UI. Both the `ChatSection` component and the inline chat in `Dashboard.jsx` use this approach.
+Chat messages from the AI are rendered using `react-markdown` with the `remark-gfm` plugin. This allows the LLM to return markdown-formatted responses (bold, lists, code blocks, tables) that render properly in the chat UI. The inline chat panel in `Dashboard.jsx` uses this approach.
 
 ### AbortController for cleanup
 
@@ -809,10 +821,10 @@ All discrepancies between documentation and actual code have been resolved:
 
 | Gap | Fix |
 |-----|-----|
-| SSE polling DB vs Redis Pub/Sub | Worker publishes to Redis channel; SSE endpoint polls DB with user_id filter and 5-min timeout |
+| SSE polling DB vs Redis Pub/Sub | Worker writes status to PostgreSQL; SSE endpoint polls DB every 2s with user_id filter and 5-min timeout |
 | localStorage for user data | Removed; user email fetched from /api/auth/me via HttpOnly cookie |
-| ChatSection process.env vs import.meta.env | Fixed to use `process.env.REACT_APP_API_URL` (CRA convention) |
-| ChatSection Authorization header | Removed; credentials:include handles auth via cookie |
+| Inline chat `process.env` vs `import.meta.env` | Fixed to use `process.env.REACT_APP_API_URL` (CRA convention) |
+| Chat Authorization header | Removed; credentials:include handles auth via cookie |
 | pyproject.toml chromadb dependency | Removed |
 | settings.py Resend config | Removed (replaced by Brevo) |
 | Parser layout-aware parsing | Already implemented (get_text("blocks") with position sorting) |
@@ -832,5 +844,5 @@ All discrepancies between documentation and actual code have been resolved:
 | LLM empty choices crash | Empty choices/content handled with structured error dict |
 | Rate limit race conditions | All rate limiters use atomic Redis pipelines (INCR + EXPIRE) |
 | Off-topic false negatives | Threshold lowered to 1 pattern match; short messages no longer bypass off-topic check |
-| Dashboard chat not rendering markdown | ReactMarkdown + remark-gfm added to both ChatSection and Dashboard |
+| Dashboard chat not rendering markdown | ReactMarkdown + remark-gfm added to the inline chat panel in Dashboard.jsx |
 | Frontend cleanup on unmount | AbortController used for chat fetch; stale responses silently ignored |

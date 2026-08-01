@@ -165,7 +165,7 @@ Redis Streams-backed job queue, pgvector embeddings, multi-layer security, Brevo
 
 Fixed all discrepancies between ARCHITECTURE.md documentation and actual codebase:
 
-- **SSE via Redis Pub/Sub**: Worker publishes `{"status": "completed/failed"}` to `report:{report_id}` channel after DB commit. SSE endpoint subscribes to Redis Pub/Sub instead of polling DB every 2s.
+- **SSE via DB polling**: Worker writes status updates directly to PostgreSQL (`completed`/`failed`). The SSE endpoint polls the report status every 2s with a 5-minute timeout (150 polls), filtering by both report_id and user_id. Completed/failed reports return status immediately without polling.
 - **No localStorage**: Removed all `localStorage.setItem`/`getItem` calls from AuthPage, UploadPage, Dashboard. User email fetched from `GET /api/auth/me` via HttpOnly cookie.
 - **pyproject.toml**: Removed chromadb dependency.
 - **settings.py**: Removed Resend config fields (replaced by Brevo).
@@ -176,8 +176,7 @@ Fixed infinite retry loops and stale message accumulation:
 
 - **ORM simplification**: Removed `chunk_start_char`/`chunk_end_char` columns from `ResumeChunk` model. All text stored directly in `text` column. Eliminated offset reconstruction logic.
 - **Worker error handling**: On failure, rolls back aborted transaction, then uses a fresh DB session to mark report as "failed". Prevents infinite retry loops caused by failed UPDATE in aborted transaction.
-- **Stream position persistence**: Worker stores `LAST_ID` in Redis key `worker:last_stream_id`. Survives container restarts — no re-reading old messages.
-- **Stale stream flush**: On first boot (no saved position), worker flushes entire stream and starts from latest entry ("$").
+- **Consumer group creation**: Consumer groups created on both streams with `mkstream=True` on startup. Messages are read with XREADGROUP, processed, and acknowledged with XACK — so restarts don't re-read already-processed messages. No explicit stream-position tracking needed.
 - **Database pool_pre_ping**: Added `pool_pre_ping=True` to async engine to detect and recycle stale connections.
 - **Worker healthcheck**: Docker Compose worker depends on backend `service_healthy` condition. Backend healthcheck uses Python urllib.
 - **Alembic env.py fix**: Removed `connection.commit()` that broke alembic's transaction management, preventing migration version from being updated.
@@ -209,7 +208,7 @@ Fixed infinite retry loops and stale message accumulation:
 - **Dashboard unmount cleanup**: SSE stream uses AbortController
 - **Chat error feedback**: Stream errors shown in chat UI
 - **N+1 query fix**: /reports endpoint uses bulk fetch instead of per-report query
-- **Schema validation**: max_length on ChatRequest.message (2000) and MatchRequest.jd_text (50000)
+- **Schema validation**: max_length on ChatRequest.message (2000) and MatchRequest.jd_text (10000)
 - **CORS hardening**: Restricted to specific methods and headers
 - **Cookie security**: Delete cookie has httponly/secure/samesite flags
 - **Content-Security-Policy**: Added to index.html
@@ -237,9 +236,9 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - **Auth race condition**: IntegrityError on concurrent duplicate email handled with rollback + re-fetch
 - **Embedder normalization**: `embed_documents()` now uses `normalize_embeddings=True` (was inconsistent with `get_embeddings()`)
 - **UploadPage stale closure**: `githubUsername` added to `useCallback` deps (GitHub ingest never ran)
-- **AbortController cleanup**: Dashboard + ChatSection store AbortController in ref and abort on unmount
+- **AbortController cleanup**: Dashboard chat fetch stores AbortController in ref and aborts on unmount
 - **AuthPage unhandled rejection**: `.catch()` added to OTP resend promise
-- **ChatSection duplicate error**: Removed redundant `setCurrentAI` + `setMessages` on error (showed two error messages)
+- **Chat duplicate error**: Removed redundant error push in the inline chat panel (showed two error messages)
 
 ## Phase 22: Report Management -- DONE
 
@@ -248,13 +247,15 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - **UploadPage recent reports**: Shows up to 3 recent reports with status, date, and delete button
 - **"View all reports" button**: Navigates to dashboard from upload page
 
+> **Note:** Auto-purge was later superseded by strict server-side rejection (see Phase 24). It remains only as a race-condition backstop.
+
 ## Phase 23: LLM Fallback & UX Enhancements -- DONE
 
 - **LLM fallback system**: Gemini 2.5 Flash primary + Groq llama-3.3-70b-versatile automatic failover
 - **Smart truncation**: Provider-aware — Gemini gets 50k/25k/10k chars, Groq fallback rebuilds prompt with 15k/10k/5k limits
 - **Structured LLM logging**: Every call logs start, model, elapsed time, token usage, result keys
 - **Worker retry bug fixed**: Only marks report as failed when `retries >= WORKER_MAX_RETRIES - 1`
-- **Chat history persistence**: GET `/api/chat/history/:report_id` loads prior messages from Redis session store
+- **Chat history persistence**: GET `/api/chat/history/:report_id` loads prior messages from PostgreSQL
 - **Email on demand**: POST `/api/reports/:id/send-email` endpoint with "Email Report" button in dashboard
 - **Dashboard delete**: Trash icon with confirmation dialog on report cards
 - **Chat minimize/maximize**: Toggle button in chat header, shows message count when expanded
@@ -265,6 +266,14 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - **Dashboard rewrites unwrap**: `activeReport.rewrites.rewrites` to handle `{rewrites:[...]}` structure
 - **Interview Questions section**: Added to Dashboard (gap_focused, technical, behavioral)
 - **LLM prompt fixes**: `how do i crack` regex no longer blocks "crack this interview"; chat prompt relaxed for career coaching
+
+## Phase 24: Report Limit Enforcement & Confirmation Dialogs -- DONE
+
+- **Server-side cap**: `_enforce_report_limit()` in `api/match.py` rejects new analyses with `409` when the user already has 3 reports. The check runs before the LLM classifier so rejected submissions burn no tokens.
+- **Auto-purge kept as backstop**: `_purge_old_reports` still trims to the 3 most recent reports after a match, covering concurrent-submission races.
+- **Frontend error parsing**: `services/api.js` gains `httpError()` -- JSON error bodies parsed into a friendly message and `err.status`, so the UI can detect 409s.
+- **ConfirmDialog component**: New reusable modal (`components/ConfirmDialog.jsx`) used for delete confirmation (UploadPage + Dashboard) and the report-limit notice (UploadPage). Replaces `window.confirm` in the Dashboard.
+- **`.btn-danger` style**: Added to `index.css` for destructive-action buttons.
 
 ---
 
@@ -277,7 +286,7 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 5. Rate limiting on matches (5/day/user)
 6. SHA-256 resume deduplication prevents re-processing
 7. **Upload security**: Magic-byte verification, size/page/text limits, two-tier document classification, content moderation, two-tier injection scanning
-8. **JD validation**: Two-tier classification check, injection scan, content moderation, length limit
+8. **JD validation**: Two-tier classification check, injection scan, content moderation, length limit; report limit (max 3/user, 409 at cap)
 9. **Chat security**: Query classification, two-tier injection detection, rate limiting, output sanitization
 10. **Prompt hardening**: "Data only" instructions, document delimiters, domain lock, no prompt disclosure
 11. **Authorization**: All resource endpoints verify user_id ownership (returns 404)
@@ -308,7 +317,7 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - [x] Redis-backed session store (survives restarts, auto-expires)
 - [x] PostgreSQL + pgvector for persistent data AND embeddings
 - [x] Redis Streams for async job processing
-- [x] Stream trimming (XTRIM MAXLEN ~50) to prevent unbounded accumulation
+- [x] Consumer groups with XREADGROUP + XACK to prevent unbounded accumulation and duplicate delivery
 - [x] Idempotency check to skip already-processed reports on worker restart
 - [x] Email OTP via Brevo (branded HTML templates)
 - [x] Report completion emails via Brevo (score + dashboard link + PDF attachment)
@@ -328,8 +337,7 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - [x] Worker depends on backend healthcheck (docker-compose)
 - [x] Graceful shutdown (DB pool, Redis connections)
 - [x] Worker error handling with fresh session on failure
-- [x] Stream position persisted in Redis (survives restarts)
-- [x] Stale stream flush on first boot
+- [x] Consumer groups created with mkstream=True on startup; XACK after processing
 - [x] pool_pre_ping on database engine
 - [x] Rate limiting on OTP (3/5min), chat (50 msgs/session/hour), and matches (5/day)
 - [x] Upload validation (magic bytes, size, pages, text length)
@@ -390,11 +398,11 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - [x] Auth IntegrityError race condition handled
 - [x] Embedder embed_documents uses normalize_embeddings
 - [x] UploadPage stale closure fixed (githubUsername in deps)
-- [x] AbortController cleanup on Dashboard + ChatSection unmount
+- [x] AbortController cleanup on Dashboard chat unmount
 - [x] AuthPage OTP resend unhandled rejection fixed
-- [x] ChatSection duplicate error message removed
+- [x] Chat duplicate error message removed (inline chat panel)
 - [x] DELETE /api/reports/:id with chunk cleanup
-- [x] Auto-purge: max 3 reports per user (older deleted on new match)
+- [x] Report limit: max 3 reports per user -- server rejects new analyses with 409 at the cap (user must delete first); auto-purge kept as race-condition backstop
 - [x] UploadPage shows recent reports with delete
 - [x] Double /api/api/ prefix fix (REACT_APP_API_URL empty in Docker)
 - [x] LLM fallback system (Gemini primary + Groq automatic failover)
@@ -435,7 +443,7 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 ### Modified Files (Phases 15-21)
 - `backend/api/auth.py` -- Full OTP flow (request-otp, verify-otp, anonymous) with Brevo + HttpOnly cookie
 - `backend/api/upload.py` -- Uses modular guardrails, two-tier classification, no offset metadata
-- `backend/api/match.py` -- Uses validate_jd_text, two-tier classification, daily rate limit, email opt-in, SSE via Redis Pub/Sub
+- `backend/api/match.py` -- Uses validate_jd_text, two-tier classification, daily rate limit, email opt-in, SSE via DB polling
 - `backend/api/chat.py` -- Async validate_message, modular guardrails imports, optional resume_id
 - `backend/api/github.py` -- Added auth + ownership check, no offset metadata
 - `backend/api/search.py` -- Added auth + ownership check
@@ -461,8 +469,7 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - `docker-compose.yml` -- Worker depends on backend healthcheck
 - `frontend/recruiter-ui/src/pages/AuthPage.jsx` -- Removed localStorage calls
 - `frontend/recruiter-ui/src/pages/UploadPage.jsx` -- User email from /api/auth/me, sign-out
-- `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- User email from /api/auth/me, sign-out
-- `frontend/recruiter-ui/src/components/ChatSection.jsx` -- import.meta.env.VITE_API_URL, credentials:include
+- `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- User email from /api/auth/me, sign-out, inline chat (import.meta.env.VITE_API_URL, credentials:include)
 - `frontend/recruiter-ui/src/services/api.js` -- credentials:include on all requests
 - `ARCHITECTURE.md`, `README.md`, `MIGRATION_PLAN.md`, `PROJECT_FLOW.md` -- Updated documentation
 
@@ -479,9 +486,8 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - `backend/services/embedding/embedder.py` -- normalize_embeddings=True on embed_documents
 - `backend/api/auth.py` -- IntegrityError handled on duplicate email
 - `frontend/recruiter-ui/src/pages/UploadPage.jsx` -- githubUsername in useCallback deps
-- `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- AbortController ref + unmount cleanup
+- `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- AbortController ref + unmount cleanup, duplicate chat error removed
 - `frontend/recruiter-ui/src/pages/AuthPage.jsx` -- .catch() on OTP resend
-- `frontend/recruiter-ui/src/components/ChatSection.jsx` -- AbortController + duplicate error removed
 
 ### Modified Files (Phase 22: Report Management)
 - `backend/api/match.py` -- Added DELETE /api/reports/:id, auto-purge old reports (max 3 per user)
@@ -490,7 +496,6 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - `frontend/recruiter-ui/src/services/api.js` -- Fixed || to ?? for REACT_APP_API_URL
 - `frontend/recruiter-ui/src/hooks/useBackendStatus.js` -- Fixed || to ?? for REACT_APP_API_URL
 - `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- Fixed || to ?? for REACT_APP_API_URL
-- `frontend/recruiter-ui/src/components/ChatSection.jsx` -- Fixed || to ?? for REACT_APP_API_URL
 - `frontend/recruiter-ui/Dockerfile` -- REACT_APP_API_URL default changed to empty
 - `docker-compose.yml` -- REACT_APP_API_URL set to empty (was /api)
 
@@ -515,3 +520,11 @@ Fixed 15 bugs identified by comprehensive codebase audit:
 - `frontend/recruiter-ui/src/pages/UploadPage.jsx` -- Recent reports list with delete
 - `frontend/recruiter-ui/src/services/api.js` -- fetchChatHistory(), sendReportEmail(), deleteReport()
 - `docker-compose.yml` -- Health check uses GET /, start_period: 120s, retries: 10
+
+### Modified Files (Phase 24: Report Limit Enforcement)
+- `backend/api/match.py` -- Added `_enforce_report_limit()` (409 at 3 reports, before classifier); `_purge_old_reports` kept as backstop
+- `frontend/recruiter-ui/src/services/api.js` -- Added `httpError()` (parses JSON detail + `err.status`)
+- `frontend/recruiter-ui/src/pages/UploadPage.jsx` -- Report-limit dialog at 3, delete confirmation, 409 handling in submit flow
+- `frontend/recruiter-ui/src/pages/Dashboard.jsx` -- Delete now uses `ConfirmDialog` (removed `window.confirm`)
+- `frontend/recruiter-ui/src/index.css` -- Added `.btn-danger` component class
+- `frontend/recruiter-ui/src/components/ConfirmDialog.jsx` -- NEW reusable confirm/danger modal

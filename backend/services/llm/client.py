@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 import logging
@@ -82,6 +83,7 @@ class LLMClient:
 
 Return ONLY JSON:
 {{
+  "job_title": "",
   "ats_score": 0,
   "missing_keywords": [],
   "keyword_suggestions": [
@@ -90,12 +92,60 @@ Return ONLY JSON:
   "summary": "",
   "strengths": [],
   "improvement_areas": []
-}}"""
+}}
+
+"job_title" must be the exact job title from the job description (e.g. "Senior Backend Engineer", never "Job Summary" or a heading)."""
+
 
         logger.info(f"[LLM] Starting generate_candidate_report | model={self._primary_model} | resume_len={len(resume)} | jd_len={len(jd)}")
         result = await self._call_with_truncation(raw, build, JD_ANALYSIS_SYSTEM_PROMPT, "generate_candidate_report")
         if "error" not in result:
             logger.info(f"[LLM] generate_candidate_report complete | ats_score={result.get('ats_score', '?')}")
+        return result
+
+    async def evaluate_ats_match(self, resume_text: str, jd_text: str, match_result: dict) -> dict:
+        raw = {
+            "resume": resume_text,
+            "jd": jd_text,
+            "match_result": match_result,
+        }
+
+        def build(inputs, t, limits=None):
+            return f"""Act as a rigorous ATS (Applicant Tracking System) combined with an experienced recruiter.
+Score how well this resume matches the job description on a 0-100 scale.
+
+Evaluate these dimensions:
+1. SKILLS & KEYWORDS: coverage of required skills, technologies, and keywords the ATS would scan for
+2. EXPERIENCE ALIGNMENT: does the work history match the role's responsibilities and seniority level
+3. QUANTIFIED IMPACT: are achievements backed by metrics, numbers, and concrete results
+4. RELEVANCE: how well the overall background and projects map to this specific role
+5. FORMATTING & SCANNABILITY: would this resume parse cleanly and highlight the right things
+
+Calibrate like a strict human recruiter:
+- 85+ = excellent, highly targeted resume
+- 70-84 = strong match with minor gaps
+- 55-69 = decent but clearly missing key requirements
+- 0-54 = weak alignment, significant gaps
+Be strict and honest — do not inflate the score.
+
+{_wrap_document("Resume", t("resume", inputs["resume"]))}
+{_wrap_document("Job Description", t("jd", inputs["jd"]))}
+{_wrap_document("Heuristic match signals (for grounding only)", json.dumps(inputs["match_result"], indent=2))}
+
+Return ONLY JSON:
+{{
+  "ats_score": 0,
+  "rating": "poor|fair|good|excellent",
+  "strengths": [],
+  "gaps": [],
+  "key_findings": [],
+  "reasoning": ""
+}}"""
+
+        logger.info(f"[LLM] Starting evaluate_ats_match | model={self._primary_model} | resume_len={len(resume_text)} | jd_len={len(jd_text)}")
+        result = await self._call_with_truncation(raw, build, JD_ANALYSIS_SYSTEM_PROMPT, "evaluate_ats_match")
+        if "error" not in result:
+            logger.info(f"[LLM] evaluate_ats_match complete | ats_score={result.get('ats_score', '?')}")
         return result
 
     async def generate_interview_questions(self, resume, jd, missing_skills, github_context):
@@ -326,6 +376,198 @@ Return ONLY JSON:
                 raise
         if last_err:
             raise last_err
+
+    async def analyze_single_repo(self, repo: dict) -> dict:
+        prompt = f"""Analyze this single GitHub repository for a technical candidate evaluation.
+
+{_wrap_document("Repository", json.dumps(repo, indent=2))}
+
+Evaluate:
+1. Project complexity and purpose
+2. Technology stack relevance
+3. Code quality indicators (readme quality, description clarity)
+4. What this repo says about the candidate's skills
+
+Return ONLY JSON:
+{{
+  "repo_name": "{repo.get('name', '')}",
+  "score": 0,
+  "complexity": "low|medium|high",
+  "tech_stack": [],
+  "strengths": [],
+  "weaknesses": [],
+  "summary": ""
+}}"""
+        return await self._call(prompt, system=JD_ANALYSIS_SYSTEM_PROMPT, label="analyze_single_repo")
+
+    async def analyze_github(self, repo_summary: list[dict]) -> dict:
+        if not repo_summary:
+            return {"overall_score": 0, "complexity_rating": "unknown", "language_diversity": "", "strengths": [], "weaknesses": [], "summary": "No repositories to analyze."}
+
+        all_strengths = []
+        all_weaknesses = []
+        repo_scores = []
+        repo_analyses = []
+
+        tasks = [self.analyze_single_repo(repo) for repo in repo_summary]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, repo in enumerate(repo_summary):
+            analysis = results[i]
+            if isinstance(analysis, Exception):
+                logger.warning(f"[LLM] analyze_github: repo {repo.get('name', '?')} failed: {analysis}")
+                continue
+            if "error" not in analysis:
+                repo_analyses.append(analysis)
+                repo_scores.append(analysis.get("score", 50))
+                all_strengths.extend(analysis.get("strengths", []))
+                all_weaknesses.extend(analysis.get("weaknesses", []))
+            logger.info(f"[LLM] analyze_github: repo {i+1}/{len(repo_summary)} done | {repo.get('name', '?')}")
+
+        if not repo_scores:
+            return {"overall_score": 0, "complexity_rating": "unknown", "language_diversity": "", "strengths": [], "weaknesses": [], "summary": "Could not analyze any repositories."}
+
+        overall = round(sum(repo_scores) / len(repo_scores), 1)
+
+        unique_strengths = list(dict.fromkeys(all_strengths))[:5]
+        unique_weaknesses = list(dict.fromkeys(all_weaknesses))[:5]
+
+        all_langs = set()
+        for r in repo_summary:
+            all_langs.update((r.get("languages") or {}).keys())
+        lang_diversity = ", ".join(sorted(all_langs)[:8]) if all_langs else "unknown"
+
+        complexities = [a.get("complexity", "medium") for a in repo_analyses]
+        if "high" in complexities:
+            rating = "expert" if complexities.count("high") >= 3 else "advanced"
+        elif "medium" in complexities:
+            rating = "intermediate"
+        else:
+            rating = "beginner"
+
+        return {
+            "overall_score": overall,
+            "complexity_rating": rating,
+            "language_diversity": lang_diversity,
+            "strengths": unique_strengths,
+            "weaknesses": unique_weaknesses,
+            "summary": f"Analyzed {len(repo_analyses)} repos. Overall score: {overall}/100. Languages: {lang_diversity}.",
+            "repo_analyses": repo_analyses,
+        }
+
+    async def analyze_career(self, resume_excerpt: str) -> dict:
+        prompt = f"""Analyze this candidate's career trajectory and professional background.
+
+{_wrap_document("Resume Excerpt", resume_excerpt)}
+
+Evaluate:
+1. Career progression and growth trajectory
+2. Tenure stability (job hopping vs long-term growth)
+3. Educational foundation relevance
+4. Leadership and management indicators
+
+Return ONLY JSON:
+{{
+  "career_stage": "entry|mid|senior|leadership",
+  "tenure_stability": "stable|moderate|unstable",
+  "progression_quality": "",
+  "strengths": [],
+  "weaknesses": [],
+  "summary": ""
+}}"""
+        return await self._call(prompt, system=JD_ANALYSIS_SYSTEM_PROMPT, label="analyze_career")
+
+    async def judge_candidate(self, agent_summary: dict, jd_text: str) -> dict:
+        prompt = f"""As a hiring judge, evaluate this candidate against the job description using all available signals.
+
+{_wrap_document("Agent Analysis Summary", json.dumps(agent_summary, indent=2))}
+{_wrap_document("Job Description", jd_text)}
+
+Consider ALL signals:
+- Skills match and gaps
+- Technical ability (GitHub evidence)
+- Career progression and experience level
+- Educational background
+- Overall fit score
+
+Return ONLY JSON:
+{{
+  "score": 0,
+  "reasoning": "",
+  "strengths": [],
+  "weaknesses": [],
+  "fit_assessment": "poor|fair|good|excellent",
+  "risks": []
+}}"""
+        return await self._call(prompt, system=JD_ANALYSIS_SYSTEM_PROMPT, label="judge_candidate")
+
+    async def generate_outreach_email(self, resume_text: str, jd_text: str, match_result: dict, github_context: dict) -> dict:
+        raw = {
+            "resume": resume_text, "jd": jd_text,
+            "match_result": match_result, "github_context": github_context or "",
+        }
+
+        def build(inputs, t, limits=None):
+            lim = limits or PRIMARY_LIMITS
+            github_part = ""
+            if isinstance(inputs.get("github_context"), dict) and inputs["github_context"].get("repos"):
+                repos = inputs["github_context"]["repos"][:3]
+                github_part = _wrap_document("Notable Repositories", json.dumps(repos, indent=2))
+
+            return f"""Generate a personalized outreach email to this candidate for the job role.
+
+Reference specific projects or experiences from their background that align with the role.
+Keep tone professional and warm. Be specific — mention actual project names, skills, or achievements.
+
+{_wrap_document("Resume", t("resume", inputs["resume"]))}
+{_wrap_document("Job Description", t("jd", inputs["jd"]))}
+{_wrap_document("Match Analysis", json.dumps(inputs["match_result"], indent=2))}
+{github_part}
+
+Return ONLY JSON:
+{{
+  "subject": "",
+  "body": "",
+  "personalization_notes": [],
+  "call_to_action": ""
+}}"""
+
+        return await self._call_with_truncation(raw, build, JD_ANALYSIS_SYSTEM_PROMPT, "generate_outreach_email")
+
+    async def generate_interview_prep(self, resume_text: str, jd_text: str, match_result: dict, github_context: dict) -> dict:
+        raw = {
+            "resume": resume_text, "jd": jd_text,
+            "match_result": match_result, "github_context": github_context or "",
+        }
+
+        def build(inputs, t, limits=None):
+            lim = limits or PRIMARY_LIMITS
+            missing = inputs.get("match_result", {}).get("missing_required", [])
+            matched = inputs.get("match_result", {}).get("matched_skills", [])
+
+            return f"""Based on the candidate's profile and the job requirements, generate tailored interview questions.
+
+Focus on:
+1. TECHNICAL questions probing the candidate's claimed expertise areas: {', '.join(matched[:5])}
+2. GAP questions to assess potential weaknesses in: {', '.join(missing[:5])}
+3. BEHAVIORAL questions for culture fit and soft skills assessment
+
+{_wrap_document("Resume", t("resume", inputs["resume"]))}
+{_wrap_document("Job Description", t("jd", inputs["jd"]))}
+
+Return ONLY JSON:
+{{
+  "technical_questions": [
+    {{"question": "", "target_skill": "", "difficulty": "beginner|intermediate|advanced", "what_to_listen_for": ""}}
+  ],
+  "gap_questions": [
+    {{"question": "", "gap_skill": "", "why_important": "", "what_to_listen_for": ""}}
+  ],
+  "behavioral_questions": [
+    {{"question": "", "competency_assessed": "", "ideal_answer_indicators": ""}}
+  ]
+}}"""
+
+        return await self._call_with_truncation(raw, build, JD_ANALYSIS_SYSTEM_PROMPT, "generate_interview_prep")
 
 
 llm_client = LLMClient()

@@ -1,7 +1,5 @@
 import logging
 
-import numpy as np
-
 from config.constants import SEMANTIC_MATCH_MODEL
 from services.embedding.model_registry import ModelRegistry
 

@@ -27,6 +27,7 @@ import models.user
 import models.resume
 import models.chunk
 import models.report
+import models.chat_message
 
 
 def run_migrations_offline() -> None:
@@ -53,6 +54,15 @@ def run_migrations_online() -> None:
             logger.info("Tables exist but no alembic_version — stamping at 001")
             connection.execute(text("CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL)"))
             connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('001')"))
+            connection.commit()
+        else:
+            # The inspector queries above started an implicit (autobegin)
+            # transaction. Without clearing it, alembic treats the connection
+            # as already being inside an "external transaction" and returns a
+            # no-op context manager from begin_transaction() — the migration
+            # statements run but are silently rolled back when the connection
+            # closes, so `alembic upgrade head` exits 0 while changing nothing.
+            connection.rollback()
 
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():

@@ -20,12 +20,16 @@ def _sanitize(text):
     return text.strip()
 
 
+GOLD = (240, 212, 147)
+GOLD_DARK = (200, 163, 92)
+
+
 class ReportPDF(FPDF):
     def header(self):
         self.set_font("Helvetica", "B", 16)
-        self.set_text_color(37, 99, 235)
+        self.set_text_color(*GOLD_DARK)
         self.cell(0, 10, _sanitize("AI Resume Tailor - Analysis Report"), new_x="LMARGIN", new_y="NEXT", align="C")
-        self.set_draw_color(37, 99, 235)
+        self.set_draw_color(*GOLD_DARK)
         self.set_line_width(0.5)
         self.line(20, self.get_y(), self.w - 20, self.get_y())
         self.ln(6)
@@ -90,7 +94,7 @@ def generate_report_pdf(
             logger.warning(f"PDF section '{label}' skipped: {e}")
 
     _safe("score", lambda: (
-        pdf.key_value("ATS Match Score", f"{match_result.get('final_score', 0)}%"),
+        pdf.key_value("ATS Compatibility Score", f"{match_result.get('final_score', 0)}/100"),
         pdf.ln(3),
     ))
 
@@ -111,11 +115,7 @@ def generate_report_pdf(
             pdf.body_text(summary)
     _safe("summary", _summary)
 
-    def _ats_compat():
-        ats_score = report.get("ats_score")
-        if ats_score is not None:
-            pdf.key_value("ATS Compatibility", f"{ats_score}/100")
-    _safe("ats_compat", _ats_compat)
+
 
     def _strengths():
         strengths = report.get("strengths", [])
@@ -200,7 +200,7 @@ def generate_report_pdf(
                     pdf.multi_cell(0, 5, _sanitize(f"  Original: {original}"))
                     for j, opt in enumerate(options, 1):
                         pdf.set_font("Helvetica", "", 9)
-                        pdf.set_text_color(37, 99, 235)
+                        pdf.set_text_color(*GOLD)
                         pdf.multi_cell(0, 5, _sanitize(f"    Option {j}: {opt}"))
                     pdf.ln(3)
     _safe("rewrites", _rewrites)

@@ -4,7 +4,7 @@ from uuid import UUID
 
 class MatchRequest(BaseModel):
     resume_id: UUID
-    jd_text: str = Field(..., max_length=50000)
+    jd_text: str = Field(..., max_length=10000)
     send_email: bool = False
 
 

@@ -1,48 +1,47 @@
 const API_BASE = process.env.REACT_APP_API_URL ?? "";
 
-function getStoredToken() {
-  return localStorage.getItem("auth_token");
-}
-
-function authHeaders(extra = {}) {
-  const token = getStoredToken();
-  const headers = { "Content-Type": "application/json", ...extra };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  return headers;
-}
-
 async function request(path, { method = "GET", body, headers = {} } = {}) {
   const url = `${API_BASE}${path}`;
   const opts = {
     method,
     credentials: "include",
-    headers: authHeaders(headers),
+    headers: {
+      "Content-Type": "application/json",
+      ...headers,
+    },
   };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `HTTP ${res.status}`);
+    const err = await httpError(res);
+    throw err;
   }
   if (res.status === 204) return null;
   return res.json();
 }
 
+async function httpError(res) {
+  let message = `HTTP ${res.status}`;
+  try {
+    const data = await res.json();
+    if (data && typeof data.detail === "string") message = data.detail;
+    else if (data && typeof data.message === "string") message = data.message;
+  } catch {}
+  const err = new Error(message);
+  err.status = res.status;
+  return err;
+}
+
 export async function uploadResumeAndJD(resumeFile) {
   const formData = new FormData();
   formData.append("file", resumeFile);
-  const headers = {};
-  const token = getStoredToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
     credentials: "include",
-    headers,
     body: formData,
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `HTTP ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -74,6 +73,10 @@ export async function deleteReport(reportId) {
   return request(`/api/reports/${reportId}`, { method: "DELETE" });
 }
 
+export async function retryReport(reportId) {
+  return request(`/api/reports/${reportId}/retry`, { method: "POST" });
+}
+
 export async function sendReportEmail(reportId) {
   return request(`/api/reports/${reportId}/send-email`, { method: "POST" });
 }
@@ -82,27 +85,25 @@ export async function chatWithAI(payload) {
   const res = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
     credentials: "include",
-    headers: authHeaders(),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `HTTP ${res.status}`);
+    throw await httpError(res);
   }
   return res;
 }
 
-export async function ingestGitHub(resumeId, username, ghToken) {
+export async function ingestGitHub(resumeId, username, token) {
   const headers = {};
-  if (ghToken) headers["X-GitHub-Token"] = ghToken;
+  if (token) headers["X-GitHub-Token"] = token;
   const res = await fetch(`${API_BASE}/api/github/${resumeId}/${encodeURIComponent(username)}`, {
     method: "POST",
     credentials: "include",
-    headers: authHeaders(headers),
+    headers,
   });
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `HTTP ${res.status}`);
+    throw await httpError(res);
   }
   return res.json();
 }
@@ -119,12 +120,10 @@ export async function requestOTP(email) {
 }
 
 export async function verifyOTP(email, otp) {
-  const data = await request("/api/auth/verify-otp", {
+  return request("/api/auth/verify-otp", {
     method: "POST",
     body: { email, otp },
   });
-  if (data?.token) localStorage.setItem("auth_token", data.token);
-  return data;
 }
 
 export async function checkAuth() {
@@ -132,8 +131,7 @@ export async function checkAuth() {
 }
 
 export async function logout() {
-  await request("/api/auth/logout", { method: "POST" });
-  localStorage.removeItem("auth_token");
+  return request("/api/auth/logout", { method: "POST" });
 }
 
 export function streamReportStatus(reportId, onStatus, onError) {
@@ -143,7 +141,7 @@ export function streamReportStatus(reportId, onStatus, onError) {
     try {
       const data = JSON.parse(event.data);
       onStatus(data.status);
-      if (data.status === "completed" || data.status === "failed") {
+      if (data.status === "completed" || data.status === "failed" || data.status === "timeout") {
         eventSource.close();
       }
     } catch {}

@@ -84,7 +84,9 @@ async def upload_document(
             return UploadRejectResponse(reason=guardrail_error, filename=file.filename)
 
         resume_skills = skill_extractor.extract_skills(text)
-        chunk_dicts = chunker.chunk_text(text)
+        chunk_dicts = chunker.chunk_semantic(text)
+        if not chunk_dicts:
+            chunk_dicts = chunker.chunk_text(text)
 
         if not chunk_dicts:
             return UploadRejectResponse(
@@ -93,6 +95,7 @@ async def upload_document(
             )
 
         chunk_texts = [c["text"] for c in chunk_dicts]
+        chunk_sections = [c.get("section", "general") for c in chunk_dicts]
         embeddings = await asyncio.to_thread(embedder.embed_documents, chunk_texts)
         if not embeddings:
             return UploadRejectResponse(
@@ -110,8 +113,8 @@ async def upload_document(
         await db.flush()
 
         metadatas = [
-            {"source": "resume", "skills": ", ".join(resume_skills)}
-            for _ in chunk_dicts
+            {"source": "resume", "skills": ", ".join(resume_skills), "section": sec}
+            for sec in chunk_sections
         ]
         await vector_store.add_documents(
             db=db,
